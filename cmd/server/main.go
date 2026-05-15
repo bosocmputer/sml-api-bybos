@@ -15,6 +15,7 @@ import (
 	"sml-api-bybos/internal/config"
 	"sml-api-bybos/internal/db"
 	"sml-api-bybos/internal/handlers"
+	"sml-api-bybos/internal/handlers/compat"
 	"sml-api-bybos/internal/middleware"
 )
 
@@ -65,6 +66,28 @@ func main() {
 	v1.GET("/ic/transactions", th.List)
 	v1.GET("/ic/transactions/:doc_no", th.Get)
 	v1.POST("/ic/transactions", th.Create)
+
+	// ── SML REST compat layer ──────────────────────────────────────────────
+	// BillFlow ชี้ SHOPEE_SML_URL มาที่นี่แทน 192.168.2.248:8080
+	// path ทุก path ตรงกับ SMLJavaRESTService3 เป๊ะ
+	cw := compat.NewWriteHandler(dbm)
+	cr := compat.NewReadHandler(dbm)
+
+	sml := r.Group("/SMLJavaRESTService")
+	sml.Use(middleware.Auth(cfg.APIKeys))
+	sml.Use(middleware.Tenant())
+
+	// Write — ส่งเอกสารเข้า SML DB
+	sml.POST("/v3/api/saleorder", cw.CreateSaleOrder)
+	sml.POST("/saleinvoice/v4", cw.CreateSaleInvoice)
+	sml.POST("/v3/api/purchaseorder", cw.CreatePurchaseOrder)
+
+	// Read — party, product, warehouse
+	sml.GET("/v3/api/customer", cr.ListCustomers)
+	sml.GET("/v3/api/supplier", cr.ListSuppliers)
+	sml.GET("/v3/api/product/:code", cr.GetProduct)
+	sml.GET("/warehouse/v4", cr.ListWarehouses)
+	sml.GET("/warehouse/v4/:code", cr.GetWarehouse)
 
 	addr := cfg.Server.Host + ":" + cfg.Server.Port
 	srv := &http.Server{Addr: addr, Handler: r}
