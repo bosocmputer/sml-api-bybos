@@ -1,0 +1,8 @@
+services:
+  sml-api:
+    build: .
+    ports:
+      - "8200:8200"
+    env_file:
+      - .env
+    restart: unless-stopped

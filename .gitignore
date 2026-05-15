@@ -1,0 +1,6 @@
+.env
+*.exe
+*.exe~
+*.test
+sml-api-bybos
+/bin/
