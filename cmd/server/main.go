@@ -64,6 +64,7 @@ func main() {
 	th := handlers.NewTransactionHandler(dbm)
 	v1.GET("/ic/transactions", th.List)
 	v1.GET("/ic/transactions/:doc_no", th.Get)
+	v1.POST("/ic/transactions", th.Create)
 
 	addr := cfg.Server.Host + ":" + cfg.Server.Port
 	srv := &http.Server{Addr: addr, Handler: r}
