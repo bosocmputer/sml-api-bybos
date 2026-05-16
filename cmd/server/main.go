@@ -34,17 +34,20 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger(logger))
 
-	// Health — ไม่ต้อง auth/tenant
+	// Health — no auth/tenant
 	h := handlers.NewHealthHandler(dbm)
 	r.GET("/health", h.Live)
 	r.GET("/health/ready", h.Ready)
 
-	// API v1 — ต้อง auth + tenant
+	tenantMW := middleware.Tenant(cfg.DB.DefaultTenant, cfg.DB.AllowedTenants)
+
+	// ── API v1 ────────────────────────────────────────────────────────────────
 	v1 := r.Group("/api/v1")
 	v1.Use(middleware.Auth(cfg.APIKeys))
-	v1.Use(middleware.Tenant())
+	v1.Use(tenantMW)
 
 	// Products
 	ph := handlers.NewProductHandler(dbm)
@@ -67,30 +70,35 @@ func main() {
 	v1.GET("/ic/transactions/:doc_no", th.Get)
 	v1.POST("/ic/transactions", th.Create)
 
-	// ── SML REST compat layer ──────────────────────────────────────────────
-	// BillFlow ชี้ SHOPEE_SML_URL มาที่นี่แทน 192.168.2.248:8080
-	// path ทุก path ตรงกับ SMLJavaRESTService3 เป๊ะ
+	// Transaction summary (daily aggregate by trans_flag)
+	smh := handlers.NewSummaryHandler(dbm)
+	v1.GET("/ic/transactions/summary", smh.DailySummary)
+
+	// Stock (warehouse breakdown from vw_stock_balance_by_sloc)
+	skh := handlers.NewStockHandler(dbm)
+	v1.GET("/ic/stock", skh.List)
+	v1.GET("/ic/stock/:code", skh.Get)
+
+	// Write — sale orders, invoices, purchase orders, products
 	cw := compat.NewWriteHandler(dbm)
+	v1.POST("/ic/sale-orders", cw.CreateSaleOrder)
+	v1.POST("/ic/sale-invoices", cw.CreateSaleInvoice)
+	v1.POST("/ic/purchase-orders", cw.CreatePurchaseOrder)
+	v1.POST("/ic/products", cw.CreateProduct)
+
+	// Warehouses (compat read handler — not yet in dedicated handler)
 	cr := compat.NewReadHandler(dbm)
-
-	sml := r.Group("/SMLJavaRESTService")
-	sml.Use(middleware.Auth(cfg.APIKeys))
-	sml.Use(middleware.Tenant())
-
-	// Write — ส่งเอกสารเข้า SML DB
-	sml.POST("/v3/api/saleorder", cw.CreateSaleOrder)
-	sml.POST("/saleinvoice/v4", cw.CreateSaleInvoice)
-	sml.POST("/v3/api/purchaseorder", cw.CreatePurchaseOrder)
-
-	// Read — party, product, warehouse
-	sml.GET("/v3/api/customer", cr.ListCustomers)
-	sml.GET("/v3/api/supplier", cr.ListSuppliers)
-	sml.GET("/v3/api/product/:code", cr.GetProduct)
-	sml.GET("/warehouse/v4", cr.ListWarehouses)
-	sml.GET("/warehouse/v4/:code", cr.GetWarehouse)
+	v1.GET("/ic/warehouses", cr.ListWarehouses)
+	v1.GET("/ic/warehouses/:code", cr.GetWarehouse)
 
 	addr := cfg.Server.Host + ":" + cfg.Server.Port
-	srv := &http.Server{Addr: addr, Handler: r}
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      r,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
 
 	go func() {
 		logger.Info("server starting", zap.String("addr", addr))
@@ -104,7 +112,7 @@ func main() {
 	<-quit
 
 	logger.Info("shutting down...")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("shutdown error", zap.Error(err))
