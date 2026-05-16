@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"sml-api-bybos/internal/config"
@@ -11,9 +12,9 @@ import (
 
 // Manager holds one pgxpool per tenant DB name.
 type Manager struct {
-	mu     sync.RWMutex
-	pools  map[string]*pgxpool.Pool
-	cfg    *config.Config
+	mu    sync.RWMutex
+	pools map[string]*pgxpool.Pool
+	cfg   *config.Config
 }
 
 func NewManager(cfg *config.Config) *Manager {
@@ -35,17 +36,33 @@ func (m *Manager) Get(ctx context.Context, dbName string) (*pgxpool.Pool, error)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// double-check after acquiring write lock
 	if p, ok = m.pools[dbName]; ok {
 		return p, nil
 	}
 
+	pool, err := m.newPool(ctx, dbName)
+	if err != nil {
+		return nil, err
+	}
+	m.pools[dbName] = pool
+	return pool, nil
+}
+
+func (m *Manager) newPool(ctx context.Context, dbName string) (*pgxpool.Pool, error) {
 	dsn := m.cfg.DSN(dbName)
 	poolCfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse dsn for %s: %w", dbName, err)
 	}
-	poolCfg.MaxConns = 10
+
+	poolCfg.MaxConns = m.cfg.DB.MaxConns
+	poolCfg.MinConns = m.cfg.DB.MinConns
+	// Recycle connections every 30 min so stale connections behind a NAT/LB don't
+	// fail silently. SML DB 248 is on LAN so this is just defensive hygiene.
+	poolCfg.MaxConnLifetime = 30 * time.Minute
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	// pgxpool's built-in health check: pings idle connections every 30s.
+	poolCfg.HealthCheckPeriod = 30 * time.Second
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
@@ -55,8 +72,6 @@ func (m *Manager) Get(ctx context.Context, dbName string) (*pgxpool.Pool, error)
 		pool.Close()
 		return nil, fmt.Errorf("ping %s: %w", dbName, err)
 	}
-
-	m.pools[dbName] = pool
 	return pool, nil
 }
 

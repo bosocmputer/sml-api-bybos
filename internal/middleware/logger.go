@@ -12,6 +12,7 @@ func Logger(log *zap.Logger) gin.HandlerFunc {
 		start := time.Now()
 		c.Next()
 		log.Info("request",
+			zap.String("request_id", c.GetString(RequestIDKey)),
 			zap.String("method", c.Request.Method),
 			zap.String("path", c.Request.URL.Path),
 			zap.Int("status", c.Writer.Status()),

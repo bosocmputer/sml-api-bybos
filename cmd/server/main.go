@@ -42,6 +42,11 @@ func main() {
 	r.GET("/health", h.Live)
 	r.GET("/health/ready", h.Ready)
 
+	// API Docs — no auth
+	dh := handlers.NewDocsHandler()
+	r.GET("/docs", dh.UI)
+	r.GET("/docs/openapi.json", dh.Spec)
+
 	tenantMW := middleware.Tenant(cfg.DB.DefaultTenant, cfg.DB.AllowedTenants)
 
 	// ── API v1 ────────────────────────────────────────────────────────────────

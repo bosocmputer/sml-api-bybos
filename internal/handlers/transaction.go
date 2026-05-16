@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -320,18 +321,9 @@ func round2(v float64) float64 {
 }
 
 func isUniqueViolation(err error) bool {
-	return err != nil && (contains(err.Error(), "duplicate key") || contains(err.Error(), "unique constraint"))
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
-}
-
-func containsStr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
+	if err == nil {
+		return false
 	}
-	return false
+	msg := err.Error()
+	return strings.Contains(msg, "duplicate key") || strings.Contains(msg, "unique constraint")
 }

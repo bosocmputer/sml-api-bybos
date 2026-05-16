@@ -133,6 +133,116 @@ func (h *WriteHandler) CreatePurchaseOrder(c *gin.Context) {
 	okV3(c, gin.H{"doc_no": p.DocNo})
 }
 
+// ─── Product POST /SMLJavaRESTService/v3/api/product ─────────────────────────
+
+type createProductUnit struct {
+	UnitCode    string  `json:"unit_code"`
+	UnitName    string  `json:"unit_name"`
+	StandValue  float64 `json:"stand_value"`
+	DivideValue float64 `json:"divide_value"`
+}
+
+type createProductPriceFormula struct {
+	UnitCode      string `json:"unit_code"`
+	SaleType      int    `json:"sale_type"`
+	Price0        string `json:"price_0"`
+	TaxType       int    `json:"tax_type"`
+	PriceCurrency int    `json:"price_currency"`
+}
+
+type createProductPayload struct {
+	Code          string                      `json:"code"`
+	Name          string                      `json:"name"`
+	NameEng       string                      `json:"name_eng"`
+	NameEng2      string                      `json:"name_eng_2"`
+	TaxType       int                         `json:"tax_type"`
+	ItemType      int                         `json:"item_type"`
+	UnitType      int                         `json:"unit_type"`
+	UnitCost      string                      `json:"unit_cost"`
+	UnitStandard  string                      `json:"unit_standard"`
+	ItemCategory  string                      `json:"item_category"`
+	CategoryName  string                      `json:"category_name"`
+	GroupMain     string                      `json:"group_main"`
+	GroupMainName string                      `json:"group_main_name"`
+	GroupSub      string                      `json:"group_sub"`
+	PurchasePoint int                         `json:"purchase_point"`
+	Units         []createProductUnit         `json:"units"`
+	PriceFormulas []createProductPriceFormula `json:"price_formulas"`
+}
+
+func (h *WriteHandler) CreateProduct(c *gin.Context) {
+	var p createProductPayload
+	if err := c.ShouldBindJSON(&p); err != nil {
+		errV3(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if p.Code == "" || p.Name == "" {
+		errV3(c, http.StatusBadRequest, "code and name are required")
+		return
+	}
+	unit := p.UnitStandard
+	if unit == "" {
+		unit = p.UnitCost
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	pool := getPool(c, h.dbm)
+	if pool == nil {
+		return
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		errV3(c, http.StatusInternalServerError, fmt.Sprintf("begin tx: %v", err))
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO ic_inventory (
+			code, name_1, name_eng_1, name_eng_2,
+			tax_type, item_type, unit_type,
+			unit_cost, unit_standard, group_main, status
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0)`,
+		p.Code, p.Name, p.NameEng, p.NameEng2,
+		p.TaxType, p.ItemType, p.UnitType,
+		p.UnitCost, unit, p.GroupMain,
+	)
+	if err != nil {
+		if strContains(err.Error(), "duplicate key") || strContains(err.Error(), "unique constraint") {
+			errV3(c, http.StatusConflict, fmt.Sprintf("product code '%s' already exists", p.Code))
+			return
+		}
+		errV3(c, http.StatusInternalServerError, fmt.Sprintf("insert product: %v", err))
+		return
+	}
+
+	for i, pf := range p.PriceFormulas {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO ic_inventory_price_formula (ic_code, unit_code, sale_type, price_0, tax_type)
+			VALUES ($1,$2,$3,$4,$5)`,
+			p.Code, pf.UnitCode, pf.SaleType, pf.Price0, pf.TaxType,
+		)
+		if err != nil {
+			errV3(c, http.StatusInternalServerError, fmt.Sprintf("insert price_formula %d: %v", i, err))
+			return
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		errV3(c, http.StatusInternalServerError, fmt.Sprintf("commit: %v", err))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "product created",
+		"data":    gin.H{"code": p.Code},
+	})
+}
+
 // ─── insertDoc — shared write logic ──────────────────────────────────────────
 
 func (h *WriteHandler) insertDoc(
