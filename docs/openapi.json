@@ -1,0 +1,3949 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "sml-api-bybos",
+    "description": "REST API for SML ERP (PostgreSQL). All routes under /api/v1/ require API key + tenant headers. Includes inventory, AR/AP master, SML document writes, ERP master pickers, document-number helpers, and AR receipt writes used by BillFlow.",
+    "version": "1.2.0",
+    "contact": {
+      "name": "BossBoard / BillFlow"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://192.168.2.109:8200",
+      "description": "Production"
+    },
+    {
+      "url": "http://localhost:8200",
+      "description": "Local dev"
+    }
+  ],
+  "security": [
+    {
+      "ApiKeyHeader": [],
+      "TenantHeader": []
+    },
+    {
+      "GuidHeader": [],
+      "TenantHeader": []
+    },
+    {
+      "ApiKeyQuery": [],
+      "TenantHeader": []
+    },
+    {
+      "ApiKeyHeader": [],
+      "DatabaseNameHeader": []
+    },
+    {
+      "GuidHeader": [],
+      "DatabaseNameHeader": []
+    },
+    {
+      "ApiKeyQuery": [],
+      "DatabaseNameHeader": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Api-Key",
+        "description": "API key. Also accepted as 'guid' header (backward compat)."
+      },
+      "TenantHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Tenant",
+        "description": "Database (tenant) name e.g. sml1_2026. Also accepted as 'databaseName' header."
+      },
+      "GuidHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "guid",
+        "description": "Backward-compatible API key header used by BillFlow."
+      },
+      "ApiKeyQuery": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "api_key",
+        "description": "Convenience API key query parameter for curl/testing."
+      },
+      "DatabaseNameHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "databaseName",
+        "description": "Backward-compatible tenant header used by BillFlow/SML legacy clients."
+      }
+    },
+    "schemas": {
+      "ARReceiptCreated": {
+        "type": "object",
+        "properties": {
+          "doc_no": {
+            "type": "string",
+            "example": "RC26050011"
+          },
+          "status": {
+            "type": "string",
+            "example": "created"
+          },
+          "invoice_count": {
+            "type": "integer",
+            "example": 2
+          },
+          "invoice_amount": {
+            "type": "number",
+            "example": 2000
+          },
+          "payout_amount": {
+            "type": "number",
+            "example": 1880
+          },
+          "difference_amount": {
+            "type": "number",
+            "example": 120
+          },
+          "passbook_code": {
+            "type": "string",
+            "example": "BANK001"
+          },
+          "expense_code": {
+            "type": "string",
+            "example": "5015"
+          },
+          "trans_flag": {
+            "type": "integer",
+            "example": 239
+          },
+          "trans_type": {
+            "type": "integer",
+            "example": 2
+          }
+        }
+      },
+      "ARReceiptLine": {
+        "type": "object",
+        "required": [
+          "order_sn"
+        ],
+        "properties": {
+          "order_sn": {
+            "type": "string",
+            "example": "2605090756X9R7"
+          },
+          "invoice_doc_no": {
+            "type": "string",
+            "example": "BF-INV26050001",
+            "description": "optional guard; if omitted, lookup uses order_sn/doc_ref"
+          },
+          "payout_amount": {
+            "type": "number",
+            "example": 940.5
+          }
+        }
+      },
+      "ARReceiptRequest": {
+        "type": "object",
+        "required": [
+          "doc_date",
+          "doc_time",
+          "doc_format_code",
+          "passbook_code",
+          "lines"
+        ],
+        "properties": {
+          "doc_no": {
+            "type": "string",
+            "example": "RC26050011",
+            "description": "optional; generated from doc_format_code if empty"
+          },
+          "doc_date": {
+            "type": "string",
+            "example": "2026-05-27"
+          },
+          "doc_time": {
+            "type": "string",
+            "example": "14:30"
+          },
+          "doc_format_code": {
+            "type": "string",
+            "example": "RC"
+          },
+          "cust_code": {
+            "type": "string",
+            "example": "AR00001",
+            "description": "optional guard; all lines must be the same customer"
+          },
+          "remark": {
+            "type": "string",
+            "example": "รับชำระ Shopee จาก BillFlow"
+          },
+          "passbook_code": {
+            "type": "string",
+            "example": "BANK001"
+          },
+          "expense_code": {
+            "type": "string",
+            "example": "5015",
+            "description": "required when invoice total is greater than Shopee payout"
+          },
+          "lines": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/ARReceiptLine"
+            }
+          }
+        }
+      },
+      "CreateProductRequest": {
+        "type": "object",
+        "required": [
+          "code",
+          "name"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "TEST-001"
+          },
+          "name": {
+            "type": "string",
+            "example": "ทดสอบสินค้าใหม่"
+          },
+          "tax_type": {
+            "type": "integer",
+            "default": 0
+          },
+          "item_type": {
+            "type": "integer",
+            "default": 0
+          },
+          "unit_type": {
+            "type": "integer",
+            "default": 1
+          },
+          "unit_cost": {
+            "type": "string",
+            "example": "ชิ้น"
+          },
+          "unit_standard": {
+            "type": "string",
+            "example": "ชิ้น"
+          },
+          "group_main": {
+            "type": "string"
+          },
+          "purchase_point": {
+            "type": "integer",
+            "default": 0
+          },
+          "units": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "unit_code": {
+                  "type": "string"
+                },
+                "unit_name": {
+                  "type": "string"
+                },
+                "stand_value": {
+                  "type": "number",
+                  "default": 1
+                },
+                "divide_value": {
+                  "type": "number",
+                  "default": 1
+                }
+              }
+            }
+          },
+          "price_formulas": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "unit_code": {
+                  "type": "string"
+                },
+                "sale_type": {
+                  "type": "integer",
+                  "default": 0
+                },
+                "price_0": {
+                  "type": "string",
+                  "example": "99.5"
+                },
+                "tax_type": {
+                  "type": "integer",
+                  "default": 0
+                },
+                "price_currency": {
+                  "type": "integer",
+                  "default": 0
+                }
+              }
+            }
+          }
+        }
+      },
+      "Customer": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "AR00001"
+          },
+          "name": {
+            "type": "string",
+            "example": "ลูกค้า จาก AI"
+          },
+          "name_1": {
+            "type": "string"
+          },
+          "name_eng_1": {
+            "type": "string"
+          },
+          "first_name": {
+            "type": "string"
+          },
+          "last_name": {
+            "type": "string"
+          },
+          "ar_status": {
+            "type": "integer",
+            "description": "0=บุคคลธรรมดา, 1=นิติบุคคล"
+          },
+          "tax_id": {
+            "type": "string"
+          },
+          "card_id": {
+            "type": "string"
+          },
+          "branch_type": {
+            "type": "integer",
+            "description": "0=สำนักงานใหญ่, 1=สาขา"
+          },
+          "branch_code": {
+            "type": "string"
+          },
+          "telephone": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "remark": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        }
+      },
+      "CustomerCreateRequest": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 25,
+            "example": "ARNEW01"
+          },
+          "ar_status": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ],
+            "description": "0=บุคคลธรรมดา, 1=นิติบุคคล"
+          },
+          "first_name": {
+            "type": "string",
+            "maxLength": 50
+          },
+          "last_name": {
+            "type": "string",
+            "maxLength": 70
+          },
+          "name_1": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "name_eng_1": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "remark": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "tax_id": {
+            "type": "string",
+            "maxLength": 50
+          },
+          "branch_type": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "branch_code": {
+            "type": "string",
+            "maxLength": 25
+          },
+          "card_id": {
+            "type": "string",
+            "maxLength": 100
+          }
+        }
+      },
+      "DocCreatedResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "doc_no",
+              "status"
+            ],
+            "properties": {
+              "doc_no": {
+                "type": "string",
+                "example": "BF-APIQA-SO-260518-001"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "created",
+                  "already_exists"
+                ]
+              },
+              "rows_written": {
+                "type": "integer",
+                "example": 3
+              },
+              "log_status": {
+                "type": "string",
+                "enum": [
+                  "created",
+                  "skipped",
+                  "warning"
+                ],
+                "example": "created",
+                "description": "Status of optional SML erp_logs write. Document creation still succeeds when this is warning."
+              },
+              "log_warning": {
+                "type": "string",
+                "example": "บันทึก SML erp_logs ไม่สำเร็จ: ไม่พบฐานข้อมูล aoy_logs",
+                "description": "User-safe warning when erp_logs cannot be written.",
+                "nullable": true
+              }
+            }
+          }
+        }
+      },
+      "DocFormat": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "RC"
+          },
+          "name_1": {
+            "type": "string",
+            "example": "รับชำระหนี้"
+          },
+          "name_2": {
+            "type": "string",
+            "example": ""
+          },
+          "format": {
+            "type": "string",
+            "example": "@YYMM####"
+          },
+          "screen_code": {
+            "type": "string",
+            "example": "EE",
+            "description": "PO=ใบสั่งซื้อ, SR=ใบสั่งขาย, SI=ขายสินค้าและบริการ, EE=รับชำระหนี้"
+          }
+        }
+      },
+      "DocItem": {
+        "type": "object",
+        "required": [
+          "item_code",
+          "unit_code",
+          "qty",
+          "price"
+        ],
+        "properties": {
+          "item_code": {
+            "type": "string",
+            "example": "CON-01000"
+          },
+          "item_name": {
+            "type": "string"
+          },
+          "unit_code": {
+            "type": "string",
+            "example": "ถุง"
+          },
+          "wh_code": {
+            "type": "string",
+            "example": "WH-01"
+          },
+          "shelf_code": {
+            "type": "string",
+            "example": "SH-01"
+          },
+          "qty": {
+            "type": "number",
+            "example": 10
+          },
+          "price": {
+            "type": "number",
+            "example": 250
+          },
+          "sum_amount": {
+            "type": "number",
+            "example": 2500
+          },
+          "line_number": {
+            "type": "integer",
+            "example": 1
+          },
+          "is_get_price": {
+            "type": "integer",
+            "example": 0
+          },
+          "price_exclude_vat": {
+            "type": "number",
+            "example": 250
+          },
+          "discount_amount": {
+            "type": "number",
+            "example": 0
+          },
+          "vat_amount": {
+            "type": "number",
+            "example": 17.5
+          },
+          "total_vat_value": {
+            "type": "number",
+            "example": 17.5
+          },
+          "tax_type": {
+            "type": "integer",
+            "example": 0
+          },
+          "vat_type": {
+            "type": "integer",
+            "example": 0
+          },
+          "sum_amount_exclude_vat": {
+            "type": "number",
+            "example": 2500
+          },
+          "wh_code_2": {
+            "type": "string"
+          },
+          "shelf_code_2": {
+            "type": "string"
+          }
+        }
+      },
+      "ERPMasterItem": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "5015"
+          },
+          "name_1": {
+            "type": "string",
+            "example": "ค่าธรรมเนียม Shopee"
+          },
+          "bank_code": {
+            "type": "string",
+            "example": "014",
+            "description": "passbook only",
+            "nullable": true
+          },
+          "bank_branch": {
+            "type": "string",
+            "example": "0001",
+            "description": "passbook only",
+            "nullable": true
+          },
+          "book_number": {
+            "type": "string",
+            "example": "123-4-56789-0",
+            "description": "passbook only",
+            "nullable": true
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "error"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": false
+          },
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "example": "validation_failed"
+              },
+              "message": {
+                "type": "string",
+                "example": "doc_no is required"
+              },
+              "details": {
+                "nullable": true
+              }
+            }
+          }
+        }
+      },
+      "NextDocNo": {
+        "type": "object",
+        "properties": {
+          "route": {
+            "type": "string",
+            "example": "receipt"
+          },
+          "trans_flag": {
+            "type": "integer",
+            "example": 239
+          },
+          "prefix": {
+            "type": "string",
+            "example": "RC"
+          },
+          "format": {
+            "type": "string",
+            "example": "@YYMM####"
+          },
+          "doc_date": {
+            "type": "string",
+            "example": "2026-05-27"
+          },
+          "last_doc_no": {
+            "type": "string",
+            "example": "RC26050010"
+          },
+          "last_seq": {
+            "type": "integer",
+            "example": 10
+          },
+          "next_doc_no": {
+            "type": "string",
+            "example": "RC26050011"
+          },
+          "next_seq": {
+            "type": "integer",
+            "example": 11
+          }
+        }
+      },
+      "PagedResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "data": {
+            "type": "array",
+            "items": {}
+          },
+          "meta": {
+            "type": "object",
+            "required": [
+              "total",
+              "page",
+              "size"
+            ],
+            "properties": {
+              "total": {
+                "type": "integer",
+                "example": 125
+              },
+              "page": {
+                "type": "integer",
+                "example": 1
+              },
+              "size": {
+                "type": "integer",
+                "example": 100
+              }
+            }
+          }
+        }
+      },
+      "Product": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "ITEM001"
+          },
+          "name_1": {
+            "type": "string",
+            "example": "สินค้าตัวอย่าง"
+          },
+          "name_2": {
+            "type": "string",
+            "example": ""
+          },
+          "unit_standard": {
+            "type": "string",
+            "example": "ชิ้น"
+          },
+          "unit_standard_name": {
+            "type": "string",
+            "example": "ชิ้น"
+          },
+          "group_code": {
+            "type": "string",
+            "example": ""
+          },
+          "balance_qty": {
+            "type": "number",
+            "example": 120
+          },
+          "average_cost": {
+            "type": "number",
+            "example": 85.5
+          },
+          "price": {
+            "type": "number",
+            "example": 100
+          },
+          "item_status": {
+            "type": "integer",
+            "example": 0
+          },
+          "status": {
+            "type": "integer",
+            "example": 0
+          },
+          "image_count": {
+            "type": "integer",
+            "example": 1
+          },
+          "primary_image_roworder": {
+            "type": "integer",
+            "example": 12,
+            "nullable": true
+          },
+          "primary_image_guid": {
+            "type": "string",
+            "example": "b8f3...",
+            "nullable": true
+          },
+          "primary_image_bytes": {
+            "type": "integer",
+            "example": 28412,
+            "nullable": true
+          }
+        }
+      },
+      "ProductCreatedResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "example": "BF-APIQA-PROD-001"
+              },
+              "status": {
+                "type": "string",
+                "example": "created"
+              }
+            }
+          }
+        }
+      },
+      "ProductImage": {
+        "type": "object",
+        "properties": {
+          "roworder": {
+            "type": "integer",
+            "example": 12
+          },
+          "image_order": {
+            "type": "integer",
+            "example": 0
+          },
+          "guid": {
+            "type": "string",
+            "example": "b8f3..."
+          },
+          "bytes": {
+            "type": "integer",
+            "example": 28412
+          }
+        }
+      },
+      "ProductUnit": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "ชิ้น"
+          },
+          "name_1": {
+            "type": "string",
+            "example": "ชิ้น"
+          },
+          "name_2": {
+            "type": "string"
+          },
+          "stand_value": {
+            "type": "number",
+            "example": 1
+          },
+          "divide_value": {
+            "type": "number",
+            "example": 1
+          },
+          "is_default": {
+            "type": "boolean",
+            "example": true
+          }
+        }
+      },
+      "PurchaseOrderRequest": {
+        "type": "object",
+        "required": [
+          "doc_no",
+          "doc_date",
+          "doc_format_code",
+          "cust_code",
+          "items"
+        ],
+        "properties": {
+          "doc_no": {
+            "type": "string"
+          },
+          "doc_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "doc_time": {
+            "type": "string"
+          },
+          "cust_code": {
+            "type": "string",
+            "description": "Supplier code (ใช้ cust_code ตาม SML convention)"
+          },
+          "sale_code": {
+            "type": "string"
+          },
+          "wh_code": {
+            "type": "string",
+            "description": "Default warehouse — overridden per item"
+          },
+          "shelf_code": {
+            "type": "string"
+          },
+          "vat_type": {
+            "type": "integer",
+            "default": 0
+          },
+          "vat_rate": {
+            "type": "number",
+            "default": 7
+          },
+          "remark": {
+            "type": "string"
+          },
+          "remark_2": {
+            "type": "string",
+            "description": "สถานะเอกสารระดับหัวเอกสาร เช่น tax/notax/re"
+          },
+          "remark_5": {
+            "type": "string",
+            "description": "หมายเหตุ 5 เช่น Shopee order number"
+          },
+          "inquiry_type": {
+            "type": "integer",
+            "description": "SML inquiry type passed through to ic_trans_detail"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DocItem"
+            }
+          },
+          "doc_format_code": {
+            "type": "string",
+            "example": "PO"
+          },
+          "doc_ref": {
+            "type": "string",
+            "description": "เอกสารอ้างอิง เช่น ยอดรูดบัตรรวมสำหรับ Shopee credit/debit payments"
+          },
+          "doc_ref_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "total_value": {
+            "type": "number"
+          },
+          "total_discount": {
+            "type": "number"
+          },
+          "total_before_vat": {
+            "type": "number"
+          },
+          "total_vat_value": {
+            "type": "number"
+          },
+          "total_except_vat": {
+            "type": "number"
+          },
+          "total_after_vat": {
+            "type": "number"
+          },
+          "total_amount": {
+            "type": "number"
+          }
+        }
+      },
+      "ReceiptCandidate": {
+        "type": "object",
+        "properties": {
+          "order_sn": {
+            "type": "string",
+            "example": "2605090756X9R7"
+          },
+          "invoice_doc_no": {
+            "type": "string",
+            "example": "BF-INV26050001"
+          },
+          "invoice_doc_date": {
+            "type": "string",
+            "example": "2026-05-09"
+          },
+          "cust_code": {
+            "type": "string",
+            "example": "AR00001"
+          },
+          "invoice_amount": {
+            "type": "number",
+            "example": 1000
+          },
+          "already_received": {
+            "type": "boolean",
+            "example": false
+          },
+          "existing_receipt_doc_no": {
+            "type": "string",
+            "example": "RC26050010"
+          },
+          "status": {
+            "type": "string",
+            "example": "ready",
+            "enum": [
+              "ready",
+              "already_received",
+              "not_found"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "example": "ใบขายนี้เคยถูกนำไปรับชำระแล้ว"
+          }
+        }
+      },
+      "ReceiptCandidateRequest": {
+        "type": "object",
+        "required": [
+          "order_sns"
+        ],
+        "properties": {
+          "order_sns": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "2605090756X9R7",
+              "2605114N3PXCA5"
+            ]
+          }
+        }
+      },
+      "SaleInvoiceRequest": {
+        "type": "object",
+        "required": [
+          "doc_no",
+          "doc_date",
+          "doc_format_code",
+          "cust_code",
+          "details"
+        ],
+        "properties": {
+          "doc_no": {
+            "type": "string"
+          },
+          "doc_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "doc_time": {
+            "type": "string"
+          },
+          "cust_code": {
+            "type": "string"
+          },
+          "sale_code": {
+            "type": "string"
+          },
+          "vat_type": {
+            "type": "integer",
+            "default": 0
+          },
+          "vat_rate": {
+            "type": "number",
+            "default": 7
+          },
+          "remark": {
+            "type": "string"
+          },
+          "remark_2": {
+            "type": "string",
+            "description": "สถานะเอกสารระดับหัวเอกสาร เช่น tax/notax/re"
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DocItem"
+            },
+            "description": "ใช้ 'details' (ไม่ใช่ 'items') สำหรับ sale invoice"
+          },
+          "doc_format_code": {
+            "type": "string",
+            "example": "INV"
+          },
+          "doc_ref": {
+            "type": "string"
+          },
+          "doc_ref_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "total_value": {
+            "type": "number"
+          },
+          "total_discount": {
+            "type": "number"
+          },
+          "total_before_vat": {
+            "type": "number"
+          },
+          "total_vat_value": {
+            "type": "number"
+          },
+          "total_except_vat": {
+            "type": "number"
+          },
+          "total_after_vat": {
+            "type": "number"
+          },
+          "total_amount": {
+            "type": "number"
+          }
+        }
+      },
+      "SaleOrderRequest": {
+        "type": "object",
+        "required": [
+          "doc_no",
+          "doc_date",
+          "doc_format_code",
+          "cust_code",
+          "items"
+        ],
+        "properties": {
+          "doc_no": {
+            "type": "string",
+            "example": "BF-SO2604000001"
+          },
+          "doc_date": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-04-28"
+          },
+          "doc_time": {
+            "type": "string",
+            "example": "09:00"
+          },
+          "cust_code": {
+            "type": "string",
+            "example": "AR00004"
+          },
+          "sale_code": {
+            "type": "string"
+          },
+          "branch_code": {
+            "type": "string",
+            "default": "001"
+          },
+          "vat_type": {
+            "type": "integer",
+            "description": "0=แยกนอก, 1=รวมใน, 2=ศูนย์%",
+            "default": 0
+          },
+          "vat_rate": {
+            "type": "number",
+            "default": 7
+          },
+          "remark": {
+            "type": "string"
+          },
+          "remark_2": {
+            "type": "string",
+            "description": "สถานะเอกสารระดับหัวเอกสาร เช่น tax/notax/re"
+          },
+          "remark_5": {
+            "type": "string",
+            "description": "หมายเหตุ 5 เช่น Shopee order number"
+          },
+          "inquiry_type": {
+            "type": "integer",
+            "description": "SML inquiry type passed through to ic_trans_detail"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DocItem"
+            }
+          },
+          "doc_format_code": {
+            "type": "string",
+            "example": "SO"
+          },
+          "doc_ref": {
+            "type": "string",
+            "description": "เอกสารอ้างอิง เช่น ยอดรูดบัตรรวมสำหรับ Shopee credit/debit payments"
+          },
+          "doc_ref_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "total_value": {
+            "type": "number"
+          },
+          "total_discount": {
+            "type": "number"
+          },
+          "total_before_vat": {
+            "type": "number"
+          },
+          "total_vat_value": {
+            "type": "number"
+          },
+          "total_except_vat": {
+            "type": "number"
+          },
+          "total_after_vat": {
+            "type": "number"
+          },
+          "total_amount": {
+            "type": "number"
+          }
+        }
+      },
+      "StockItem": {
+        "type": "object",
+        "properties": {
+          "item_code": {
+            "type": "string"
+          },
+          "item_name": {
+            "type": "string"
+          },
+          "wh_code": {
+            "type": "string"
+          },
+          "shelf_code": {
+            "type": "string"
+          },
+          "balance_qty": {
+            "type": "number"
+          },
+          "unit_code": {
+            "type": "string"
+          }
+        }
+      },
+      "SuccessResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "data": {},
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "Supplier": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "V-001"
+          },
+          "name": {
+            "type": "string"
+          },
+          "name_1": {
+            "type": "string"
+          },
+          "name_eng_1": {
+            "type": "string"
+          },
+          "firstname": {
+            "type": "string"
+          },
+          "lastname": {
+            "type": "string"
+          },
+          "ap_status": {
+            "type": "integer",
+            "description": "0=บุคคลธรรมดา, 1=นิติบุคคล"
+          },
+          "tax_id": {
+            "type": "string"
+          },
+          "card_id": {
+            "type": "string"
+          },
+          "branch_type": {
+            "type": "integer",
+            "description": "0=สำนักงานใหญ่, 1=สาขา"
+          },
+          "branch_code": {
+            "type": "string"
+          },
+          "telephone": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "remark": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        }
+      },
+      "SupplierCreateRequest": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 25,
+            "example": "VNEW01"
+          },
+          "ap_status": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ],
+            "description": "0=บุคคลธรรมดา, 1=นิติบุคคล"
+          },
+          "firstname": {
+            "type": "string",
+            "maxLength": 50
+          },
+          "lastname": {
+            "type": "string",
+            "maxLength": 70
+          },
+          "name_1": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "name_eng_1": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "remark": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "tax_id": {
+            "type": "string",
+            "maxLength": 50
+          },
+          "branch_type": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "branch_code": {
+            "type": "string",
+            "maxLength": 25
+          },
+          "card_id": {
+            "type": "string",
+            "maxLength": 50
+          }
+        }
+      },
+      "Transaction": {
+        "type": "object",
+        "properties": {
+          "doc_no": {
+            "type": "string",
+            "example": "BF-SO2604000001"
+          },
+          "doc_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "trans_flag": {
+            "type": "string",
+            "example": "SO"
+          },
+          "cust_code": {
+            "type": "string"
+          },
+          "total_amount": {
+            "type": "number"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransactionItem"
+            }
+          }
+        }
+      },
+      "TransactionItem": {
+        "type": "object",
+        "properties": {
+          "item_code": {
+            "type": "string"
+          },
+          "item_name": {
+            "type": "string"
+          },
+          "unit_code": {
+            "type": "string"
+          },
+          "qty": {
+            "type": "number"
+          },
+          "price": {
+            "type": "number"
+          },
+          "sum_amount": {
+            "type": "number"
+          },
+          "wh_code": {
+            "type": "string"
+          },
+          "shelf_code": {
+            "type": "string"
+          }
+        }
+      },
+      "Unit": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "ชิ้น"
+          },
+          "name_1": {
+            "type": "string",
+            "example": "ชิ้น"
+          },
+          "name_2": {
+            "type": "string"
+          }
+        }
+      },
+      "Warehouse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "WH-01"
+          },
+          "name": {
+            "type": "string",
+            "example": "คลังหลัก"
+          },
+          "shelves": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "example": "SH-01"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/v1/ap/suppliers": {
+      "get": {
+        "tags": [
+          "Suppliers"
+        ],
+        "summary": "List suppliers (paginated)",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "ค้นหาจาก code/name และ field ที่ endpoint รองรับ"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "supplier list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PagedResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Supplier"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Suppliers"
+        ],
+        "summary": "Create supplier",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "supplier created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Supplier"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "409": {
+            "description": "duplicate supplier code"
+          }
+        }
+      }
+    },
+    "/api/v1/ap/suppliers/{code}": {
+      "get": {
+        "tags": [
+          "Suppliers"
+        ],
+        "summary": "Get supplier by code",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "V-001"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "supplier found"
+          },
+          "404": {
+            "description": "not found"
+          }
+        }
+      }
+    },
+    "/api/v1/ar/customers": {
+      "get": {
+        "tags": [
+          "Customers"
+        ],
+        "summary": "List customers (paginated)",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "ค้นหาจาก code/name และ field ที่ endpoint รองรับ"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "customer list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PagedResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Customer"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Customers"
+        ],
+        "summary": "Create customer",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "customer created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Customer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "duplicate customer code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "customer write failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ar/customers/{code}": {
+      "get": {
+        "tags": [
+          "Customers"
+        ],
+        "summary": "Get customer by code",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "AR00001"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "customer found"
+          },
+          "404": {
+            "description": "not found"
+          }
+        }
+      }
+    },
+    "/api/v1/ar/receipt-candidates": {
+      "post": {
+        "tags": [
+          "Receipts"
+        ],
+        "summary": "Check Shopee orders against SML sale invoices and existing receipts",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReceiptCandidateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "receipt candidates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "items": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/ReceiptCandidate"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid order list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "candidate lookup failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ar/receipts": {
+      "post": {
+        "tags": [
+          "Receipts"
+        ],
+        "summary": "Create SML AR receipt document",
+        "description": "Creates ap_ar_trans, ap_ar_trans_detail, cb_trans, and cb_trans_detail with trans_flag=239/trans_type=2. Difference amount is written as expense detail doc_type=11 when invoice total exceeds payout.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ARReceiptRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "receipt created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/ARReceiptCreated"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "validation failed / payout exceeds invoice / missing expense",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "duplicate receipt or invoice already received",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "receipt write failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/erp/branches": {
+      "get": {
+        "tags": [
+          "ERP Master"
+        ],
+        "summary": "SML branches from erp_branch_list",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "ค้นหาจาก code/name และ field ที่ endpoint รองรับ"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "branches list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PagedResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ERPMasterItem"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "branches query failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/erp/expenses": {
+      "get": {
+        "tags": [
+          "ERP Master"
+        ],
+        "summary": "SML expenses from erp_expenses_list",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "ค้นหาจาก code/name และ field ที่ endpoint รองรับ"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "expenses list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PagedResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ERPMasterItem"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "expenses query failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/erp/incomes": {
+      "get": {
+        "tags": [
+          "ERP Master"
+        ],
+        "summary": "SML incomes from erp_income_list",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "ค้นหาจาก code/name และ field ที่ endpoint รองรับ"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "incomes list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PagedResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ERPMasterItem"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "incomes query failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/erp/passbooks": {
+      "get": {
+        "tags": [
+          "ERP Master"
+        ],
+        "summary": "SML passbooks from erp_pass_book",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "ค้นหาจาก code/name และ field ที่ endpoint รองรับ"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "passbooks list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PagedResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ERPMasterItem"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "passbooks query failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/erp/users": {
+      "get": {
+        "tags": [
+          "ERP Master"
+        ],
+        "summary": "SML users/salespeople from erp_user",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "ค้นหาจาก code/name และ field ที่ endpoint รองรับ"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "users list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PagedResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ERPMasterItem"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "users query failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/doc-formats": {
+      "get": {
+        "tags": [
+          "Doc Formats"
+        ],
+        "summary": "List SML document formats",
+        "description": "Use screen_code PO for purchase orders, SR for sale orders, SI for sale invoices, and EE for AR receipts.",
+        "parameters": [
+          {
+            "name": "screen_code",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "PO",
+                "SR",
+                "SI",
+                "EE"
+              ]
+            },
+            "example": "EE"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "document formats",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/DocFormat"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "doc format query failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/doc-no/next": {
+      "get": {
+        "tags": [
+          "Doc Formats"
+        ],
+        "summary": "Preview next SML document number",
+        "description": "Reads existing SML documents and returns the next number for saleorder, saleinvoice, purchaseorder, or receipt.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "saleorder",
+                "saleinvoice",
+                "purchaseorder",
+                "receipt",
+                "so",
+                "si",
+                "po",
+                "rc"
+              ]
+            },
+            "example": "receipt"
+          },
+          {
+            "name": "prefix",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "BF"
+            },
+            "example": "RC"
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "YYMM####"
+            },
+            "example": "@YYMM####"
+          },
+          {
+            "name": "doc_date",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": "2026-05-27"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "next doc no",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/NextDocNo"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid route/date/format",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "next doc no failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/products": {
+      "get": {
+        "tags": [
+          "Products"
+        ],
+        "summary": "List products (paginated)",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "ค้นหาจาก code/name และ field ที่ endpoint รองรับ"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "list of products",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PagedResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Product"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Products"
+        ],
+        "summary": "Create a new product in SML",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProductRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductCreatedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "product code already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/products/{code}": {
+      "get": {
+        "tags": [
+          "Products"
+        ],
+        "summary": "Get product by item code",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "CON-01000"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "product found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Product"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found"
+          }
+        }
+      }
+    },
+    "/api/v1/ic/products/{code}/images": {
+      "get": {
+        "tags": [
+          "Products"
+        ],
+        "summary": "List product image metadata",
+        "description": "Reads the optional tenant image database `${tenant}_images`. Missing image DB returns an empty image list.",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "ITEM001"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "image list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "images": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/ProductImage"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid product code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "image metadata read failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/products/{code}/images/{roworder}": {
+      "get": {
+        "tags": [
+          "Products"
+        ],
+        "summary": "Get product image bytes",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "ITEM001"
+          },
+          {
+            "name": "roworder",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "example": 12
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "image bytes",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/gif": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid image parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "image not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "image read failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/products/{code}/units": {
+      "get": {
+        "tags": [
+          "Products"
+        ],
+        "summary": "List valid units for one SML product",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "BF00002"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "product units from ic_unit_use plus unit_standard fallback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "units": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/ProductUnit"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "product not found"
+          }
+        }
+      }
+    },
+    "/api/v1/ic/purchase-orders": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Create purchase order (ใบสั่งซื้อ)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurchaseOrderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocCreatedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "doc_no already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "document write failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/sale-invoices": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Create sale invoice (ใบกำกับภาษี) — uses 'details' not 'items'",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaleInvoiceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocCreatedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "doc_no already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "document write failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/sale-orders": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Create sale order (ใบสั่งขาย)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaleOrderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocCreatedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "doc_no already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "document write failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/stock": {
+      "get": {
+        "tags": [
+          "Stock"
+        ],
+        "summary": "List stock balances (paginated)",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "stock list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PagedResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/StockItem"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/stock/{code}": {
+      "get": {
+        "tags": [
+          "Stock"
+        ],
+        "summary": "Get stock balance by item code",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "stock for item"
+          },
+          "404": {
+            "description": "not found"
+          }
+        }
+      }
+    },
+    "/api/v1/ic/transactions": {
+      "get": {
+        "tags": [
+          "Transactions"
+        ],
+        "summary": "List transactions (paginated + filterable)",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 100
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": "2026-04-01"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": "2026-04-30"
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "example": "SO",
+            "description": "trans_flag filter: SO, SI, PO, ..."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "list of transactions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PagedResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Transaction"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Transactions"
+        ],
+        "summary": "Create generic transaction",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaleOrderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "created"
+          }
+        }
+      }
+    },
+    "/api/v1/ic/transactions/{doc_no}": {
+      "get": {
+        "tags": [
+          "Transactions"
+        ],
+        "summary": "Get transaction by doc_no",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "transaction found"
+          },
+          "404": {
+            "description": "not found"
+          }
+        }
+      }
+    },
+    "/api/v1/ic/transactions/summary": {
+      "get": {
+        "tags": [
+          "Transactions"
+        ],
+        "summary": "Daily transaction summary (aggregate by trans_flag)",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "daily summary"
+          }
+        }
+      }
+    },
+    "/api/v1/ic/warehouses": {
+      "get": {
+        "tags": [
+          "Warehouses"
+        ],
+        "summary": "List all warehouses",
+        "responses": {
+          "200": {
+            "description": "warehouse list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PagedResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Warehouse"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/warehouses/{code}": {
+      "get": {
+        "tags": [
+          "Warehouses"
+        ],
+        "summary": "Get warehouse with shelves by code",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "WH-01"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "warehouse with shelves"
+          },
+          "404": {
+            "description": "not found"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Liveness check",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "ok"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Readiness check (tests DB connection)",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "database": {
+                      "type": "string",
+                      "example": "ok"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "not ready"
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": [
+          "Docs"
+        ],
+        "summary": "OpenAPI specification",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OpenAPI JSON"
+          }
+        }
+      }
+    },
+    "/api/v1/ic/purchase-orders/{doc_no}/creditor": {
+      "patch": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Update purchase order creditor (cust_code)",
+        "description": "Updates ic_trans.cust_code and ic_trans_detail.cust_code for an existing purchase order. Used when the supplier on a PO needs to be corrected.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "PO-001"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "cust_code"
+                ],
+                "properties": {
+                  "cust_code": {
+                    "type": "string",
+                    "example": "V-001",
+                    "description": "New supplier code (SML uses cust_code for suppliers on PO)"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "creditor updated"
+          },
+          "400": {
+            "description": "validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "purchase order not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "update failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/purchase-orders/{doc_no}/doc-ref": {
+      "patch": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Update purchase order doc-ref fields",
+        "description": "Updates doc_ref and doc_ref_date on ic_trans for an existing purchase order.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "PO-001"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "doc_ref": {
+                    "type": "string",
+                    "example": "REF-001",
+                    "description": "เอกสารอ้างอิง เช่น ยอดรูดบัตร"
+                  },
+                  "doc_ref_date": {
+                    "type": "string",
+                    "format": "date",
+                    "example": "2026-06-01"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "doc-ref updated"
+          },
+          "400": {
+            "description": "validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "purchase order not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "update failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/sale-invoices/{doc_no}/cancel/preview": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Preview sale invoice cancellation (credit note)",
+        "description": "Returns what the credit note would look like without writing anything. Checks for duplicate and already-used state.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "BF-INV26050001",
+            "description": "Sale invoice doc_no to cancel"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "doc_no": {
+                    "type": "string",
+                    "example": "CN-001",
+                    "description": "Desired credit note doc_no"
+                  },
+                  "doc_date": {
+                    "type": "string",
+                    "format": "date",
+                    "example": "2026-06-01"
+                  },
+                  "doc_time": {
+                    "type": "string",
+                    "example": "14:00"
+                  },
+                  "doc_format_code": {
+                    "type": "string",
+                    "example": "CN"
+                  },
+                  "remark": {
+                    "type": "string"
+                  },
+                  "user_request": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "preview (status: ready | already_exists)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "sale invoice not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "source sale invoice already used",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/sale-invoices/{doc_no}/cancel": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Cancel sale invoice — creates credit note (ใบลดหนี้)",
+        "description": "Creates a credit note (trans_flag=CN) that mirrors the original sale invoice with negated items and marks the source invoice used_status=1. Idempotent: returns already_exists if a credit note already exists for this sale.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "BF-INV26050001",
+            "description": "Sale invoice doc_no to cancel"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "doc_no"
+                ],
+                "properties": {
+                  "doc_no": {
+                    "type": "string",
+                    "example": "CN-001",
+                    "description": "Credit note doc_no (required)"
+                  },
+                  "doc_date": {
+                    "type": "string",
+                    "format": "date",
+                    "example": "2026-06-01"
+                  },
+                  "doc_time": {
+                    "type": "string",
+                    "example": "14:00"
+                  },
+                  "doc_format_code": {
+                    "type": "string",
+                    "example": "CN"
+                  },
+                  "remark": {
+                    "type": "string"
+                  },
+                  "user_request": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "credit note created (status: created)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "credit note already exists (status: already_exists) — idempotent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "sale invoice not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "duplicate doc_no or source already used",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/erp/sml-user-list": {
+      "get": {
+        "tags": [
+          "ERP Master"
+        ],
+        "summary": "SML users from smlerpmaindata.sml_user_list",
+        "description": "Queries smlerpmaindata.sml_user_list regardless of X-Tenant header. Returns active users only (active_status=1).",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "ค้นหาจาก user_code หรือ user_name"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "sml user list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PagedResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ERPMasterItem"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "query failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{doc_no}/lock": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Lock a document (set is_lock_record=1)",
+        "description": "Freezes a fully-signed document in SML by setting is_lock_record=1. Works across ic_trans and ap_ar_trans. Idempotent — locking an already-locked document returns already_locked=true without error.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "BF-INV26050001"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "locked (or already_locked=true if already locked)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "doc_no": {
+                              "type": "string",
+                              "example": "BF-INV26050001"
+                            },
+                            "table": {
+                              "type": "string",
+                              "example": "ic_trans"
+                            },
+                            "trans_flag": {
+                              "type": "integer",
+                              "example": 10
+                            },
+                            "is_lock_record": {
+                              "type": "integer",
+                              "example": 1
+                            },
+                            "already_locked": {
+                              "type": "boolean",
+                              "example": false
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "doc_no is required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "document not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "document not lockable (cancelled concurrently)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "lock failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Docs",
+      "description": "OpenAPI and Swagger UI support"
+    },
+    {
+      "name": "Health",
+      "description": "Liveness and readiness checks"
+    },
+    {
+      "name": "Products",
+      "description": "Inventory products (ic_inventory)"
+    },
+    {
+      "name": "Documents",
+      "description": "Sale orders, sale invoices, purchase orders"
+    },
+    {
+      "name": "Transactions",
+      "description": "Transaction log (ic_trans)"
+    },
+    {
+      "name": "Stock",
+      "description": "Stock balance"
+    },
+    {
+      "name": "Warehouses",
+      "description": "Warehouses and shelves"
+    },
+    {
+      "name": "Customers",
+      "description": "AR customers (ar_customer)"
+    },
+    {
+      "name": "Suppliers",
+      "description": "AP suppliers (ap_supplier)"
+    },
+    {
+      "name": "Doc Formats",
+      "description": "SML document formats and next document number helpers"
+    },
+    {
+      "name": "ERP Master",
+      "description": "Branch, user, expense, income, and passbook pickers"
+    },
+    {
+      "name": "Receipts",
+      "description": "AR receipt candidates and receipt document creation"
+    }
+  ]
+}
