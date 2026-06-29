@@ -1,8 +1,9 @@
 services:
-  sml-api:
+  sml-api-paperless:
     build: .
+    container_name: sml-api-bybos-paperless
     ports:
-      - "8200:8200"
+      - "8201:8201"
     env_file:
       - .env
     restart: unless-stopped

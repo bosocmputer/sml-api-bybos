@@ -149,11 +149,8 @@ http://localhost:8200/openapi.json
 |---|---|---|
 | `POST` | `/api/v1/ic/sale-orders` | สร้างใบสั่งขาย (sale order) |
 | `POST` | `/api/v1/ic/sale-invoices` | สร้างใบกำกับภาษี (sale invoice) |
-| `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel/preview` | Preview ใบลดหนี้ (credit note) โดยไม่เขียนข้อมูล |
-| `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel` | ยกเลิกใบกำกับภาษี — สร้างใบลดหนี้ (credit note); idempotent |
 | `POST` | `/api/v1/ic/purchase-orders` | สร้างใบสั่งซื้อ (purchase order) |
 | `PATCH` | `/api/v1/ic/purchase-orders/:doc_no/creditor` | แก้เจ้าหนี้ของใบสั่งซื้อเดิม โดยอัปเดต `ic_trans.cust_code` และ `ic_trans_detail.cust_code` |
-| `PATCH` | `/api/v1/ic/purchase-orders/:doc_no/doc-ref` | อัปเดต `doc_ref` และ `doc_ref_date` บนใบสั่งซื้อเดิม |
 
 ### Transactions
 
@@ -182,7 +179,8 @@ http://localhost:8200/openapi.json
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/v1/ic/doc-formats?screen_code=PO` | รูปแบบเอกสารจาก `erp_doc_format`; รองรับ `PO`, `SR`, `SI`, `EE` |
+| `GET` | `/api/v1/ic/doc-formats` | รูปแบบเอกสารทั้งหมดจาก `erp_doc_format`; ส่ง `screen_code` ได้ถ้าต้องการ filter |
+| `GET` | `/api/v1/ic/doc-formats/by-code?doc_format_code=PO` | ค้นหารูปแบบเอกสารด้วย `erp_doc_format.code` และคืน `screen_code` ของรายการนั้น |
 | `GET` | `/api/v1/ic/doc-no/next` | ดูเลขเอกสารถัดไปจาก SML สำหรับ `saleorder`, `saleinvoice`, `purchaseorder`, `receipt` |
 
 ### Accounts Receivable / Customers (`ar`)
@@ -212,13 +210,6 @@ http://localhost:8200/openapi.json
 | `GET` | `/api/v1/erp/expenses` | ค่าใช้จ่ายจาก `erp_expenses_list` |
 | `GET` | `/api/v1/erp/incomes` | รายได้จาก `erp_income_list` |
 | `GET` | `/api/v1/erp/passbooks` | สมุดบัญชี/บัญชีรับเงินจาก `erp_pass_book` |
-| `GET` | `/api/v1/erp/sml-user-list` | ผู้ใช้ SML จาก `smlerpmaindata.sml_user_list` (ไม่ขึ้นกับ tenant) |
-
-### Document Lock
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/api/v1/documents/:doc_no/lock` | Lock เอกสาร (set `is_lock_record=1`) ใน `ic_trans` หรือ `ap_ar_trans`; idempotent |
 
 ---
 
@@ -371,6 +362,28 @@ curl "http://localhost:8200/api/v1/ic/doc-formats?screen_code=EE" \
       "screen_code": "EE"
     }
   ]
+}
+```
+
+### GET `/api/v1/ic/doc-formats/by-code?doc_format_code=RC`
+
+```bash
+curl "http://localhost:8200/api/v1/ic/doc-formats/by-code?doc_format_code=RC" \
+  -H "X-Api-Key: smlx" \
+  -H "X-Tenant: aoy"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "code": "RC",
+    "name_1": "รับชำระหนี้",
+    "name_2": "",
+    "format": "@YYMM####",
+    "screen_code": "EE"
+  }
 }
 ```
 

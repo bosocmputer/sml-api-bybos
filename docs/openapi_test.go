@@ -28,6 +28,7 @@ func TestOpenAPISpecIsValidAndBillFlowNative(t *testing.T) {
 		"/api/v1/erp/incomes",
 		"/api/v1/erp/passbooks",
 		"/api/v1/ic/doc-formats",
+		"/api/v1/ic/doc-formats/by-code",
 		"/api/v1/ic/doc-no/next",
 		"/api/v1/ic/units",
 		"/api/v1/ic/products",

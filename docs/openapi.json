@@ -3,7 +3,7 @@
   "info": {
     "title": "sml-api-bybos",
     "description": "REST API for SML ERP (PostgreSQL). All routes under /api/v1/ require API key + tenant headers. Includes inventory, AR/AP master, SML document writes, ERP master pickers, document-number helpers, and AR receipt writes used by BillFlow.",
-    "version": "1.2.0",
+    "version": "1.1.0",
     "contact": {
       "name": "BossBoard / BillFlow"
     }
@@ -2272,7 +2272,7 @@
           "Doc Formats"
         ],
         "summary": "List SML document formats",
-        "description": "Use screen_code PO for purchase orders, SR for sale orders, SI for sale invoices, and EE for AR receipts.",
+        "description": "Lists document formats from erp_doc_format. Optional screen_code filters by SML screen.",
         "parameters": [
           {
             "name": "screen_code",
@@ -2310,6 +2310,89 @@
                       }
                     }
                   ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "doc format query failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/doc-formats/by-code": {
+      "get": {
+        "tags": [
+          "Doc Formats"
+        ],
+        "summary": "Get one SML document format by erp_doc_format.code",
+        "description": "Looks up erp_doc_format by code and returns the matching format with its screen_code. Returns 409 when one code is configured under multiple screen_code values.",
+        "parameters": [
+          {
+            "name": "doc_format_code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "PO"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "document format",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/DocFormat"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "doc_format_code is required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "document format was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "document format code is ambiguous",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -3218,6 +3301,63 @@
         }
       }
     },
+    "/api/v1/ic/units": {
+      "get": {
+        "tags": [
+          "Products"
+        ],
+        "summary": "List active SML units",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "maximum": 500
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "active unit master rows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "units": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/Unit"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/ic/warehouses": {
       "get": {
         "tags": [
@@ -3304,6 +3444,52 @@
             }
           }
         }
+      },
+      "post": {
+        "tags": [
+          "Customers"
+        ],
+        "summary": "Create AR customer",
+        "description": "Creates ar_customer and ar_customer_detail in one transaction. Backward compatible with {code, name_1}.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "customer created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Customer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "409": {
+            "description": "duplicate customer code"
+          }
+        }
       }
     },
     "/health/ready": {
@@ -3349,548 +3535,6 @@
         "responses": {
           "200": {
             "description": "OpenAPI JSON"
-          }
-        }
-      }
-    },
-    "/api/v1/ic/purchase-orders/{doc_no}/creditor": {
-      "patch": {
-        "tags": [
-          "Documents"
-        ],
-        "summary": "Update purchase order creditor (cust_code)",
-        "description": "Updates ic_trans.cust_code and ic_trans_detail.cust_code for an existing purchase order. Used when the supplier on a PO needs to be corrected.",
-        "parameters": [
-          {
-            "name": "doc_no",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "example": "PO-001"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "cust_code"
-                ],
-                "properties": {
-                  "cust_code": {
-                    "type": "string",
-                    "example": "V-001",
-                    "description": "New supplier code (SML uses cust_code for suppliers on PO)"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "creditor updated"
-          },
-          "400": {
-            "description": "validation failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "purchase order not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "update failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/ic/purchase-orders/{doc_no}/doc-ref": {
-      "patch": {
-        "tags": [
-          "Documents"
-        ],
-        "summary": "Update purchase order doc-ref fields",
-        "description": "Updates doc_ref and doc_ref_date on ic_trans for an existing purchase order.",
-        "parameters": [
-          {
-            "name": "doc_no",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "example": "PO-001"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "doc_ref": {
-                    "type": "string",
-                    "example": "REF-001",
-                    "description": "เอกสารอ้างอิง เช่น ยอดรูดบัตร"
-                  },
-                  "doc_ref_date": {
-                    "type": "string",
-                    "format": "date",
-                    "example": "2026-06-01"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "doc-ref updated"
-          },
-          "400": {
-            "description": "validation failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "purchase order not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "update failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/ic/sale-invoices/{doc_no}/cancel/preview": {
-      "post": {
-        "tags": [
-          "Documents"
-        ],
-        "summary": "Preview sale invoice cancellation (credit note)",
-        "description": "Returns what the credit note would look like without writing anything. Checks for duplicate and already-used state.",
-        "parameters": [
-          {
-            "name": "doc_no",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "example": "BF-INV26050001",
-            "description": "Sale invoice doc_no to cancel"
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "doc_no": {
-                    "type": "string",
-                    "example": "CN-001",
-                    "description": "Desired credit note doc_no"
-                  },
-                  "doc_date": {
-                    "type": "string",
-                    "format": "date",
-                    "example": "2026-06-01"
-                  },
-                  "doc_time": {
-                    "type": "string",
-                    "example": "14:00"
-                  },
-                  "doc_format_code": {
-                    "type": "string",
-                    "example": "CN"
-                  },
-                  "remark": {
-                    "type": "string"
-                  },
-                  "user_request": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "preview (status: ready | already_exists)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "validation failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "sale invoice not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "source sale invoice already used",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/ic/sale-invoices/{doc_no}/cancel": {
-      "post": {
-        "tags": [
-          "Documents"
-        ],
-        "summary": "Cancel sale invoice — creates credit note (ใบลดหนี้)",
-        "description": "Creates a credit note (trans_flag=CN) that mirrors the original sale invoice with negated items and marks the source invoice used_status=1. Idempotent: returns already_exists if a credit note already exists for this sale.",
-        "parameters": [
-          {
-            "name": "doc_no",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "example": "BF-INV26050001",
-            "description": "Sale invoice doc_no to cancel"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "doc_no"
-                ],
-                "properties": {
-                  "doc_no": {
-                    "type": "string",
-                    "example": "CN-001",
-                    "description": "Credit note doc_no (required)"
-                  },
-                  "doc_date": {
-                    "type": "string",
-                    "format": "date",
-                    "example": "2026-06-01"
-                  },
-                  "doc_time": {
-                    "type": "string",
-                    "example": "14:00"
-                  },
-                  "doc_format_code": {
-                    "type": "string",
-                    "example": "CN"
-                  },
-                  "remark": {
-                    "type": "string"
-                  },
-                  "user_request": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "credit note created (status: created)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "credit note already exists (status: already_exists) — idempotent",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "validation failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "sale invoice not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "duplicate doc_no or source already used",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/erp/sml-user-list": {
-      "get": {
-        "tags": [
-          "ERP Master"
-        ],
-        "summary": "SML users from smlerpmaindata.sml_user_list",
-        "description": "Queries smlerpmaindata.sml_user_list regardless of X-Tenant header. Returns active users only (active_status=1).",
-        "parameters": [
-          {
-            "name": "search",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            },
-            "description": "ค้นหาจาก user_code หรือ user_name"
-          },
-          {
-            "name": "page",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 1,
-              "minimum": 1
-            }
-          },
-          {
-            "name": "size",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 20,
-              "maximum": 200,
-              "minimum": 1
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "sml user list",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/PagedResponse"
-                    },
-                    {
-                      "properties": {
-                        "data": {
-                          "type": "array",
-                          "items": {
-                            "$ref": "#/components/schemas/ERPMasterItem"
-                          }
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "query failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/documents/{doc_no}/lock": {
-      "post": {
-        "tags": [
-          "Documents"
-        ],
-        "summary": "Lock a document (set is_lock_record=1)",
-        "description": "Freezes a fully-signed document in SML by setting is_lock_record=1. Works across ic_trans and ap_ar_trans. Idempotent — locking an already-locked document returns already_locked=true without error.",
-        "parameters": [
-          {
-            "name": "doc_no",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "example": "BF-INV26050001"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "locked (or already_locked=true if already locked)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/SuccessResponse"
-                    },
-                    {
-                      "properties": {
-                        "data": {
-                          "type": "object",
-                          "properties": {
-                            "doc_no": {
-                              "type": "string",
-                              "example": "BF-INV26050001"
-                            },
-                            "table": {
-                              "type": "string",
-                              "example": "ic_trans"
-                            },
-                            "trans_flag": {
-                              "type": "integer",
-                              "example": 10
-                            },
-                            "is_lock_record": {
-                              "type": "integer",
-                              "example": 1
-                            },
-                            "already_locked": {
-                              "type": "boolean",
-                              "example": false
-                            }
-                          }
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "doc_no is required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "document not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "document not lockable (cancelled concurrently)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "lock failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
           }
         }
       }

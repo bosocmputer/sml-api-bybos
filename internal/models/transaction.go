@@ -13,6 +13,7 @@ const (
 	TransFlagInventoryAdjust  = 66
 	TransFlagStockTransferOut = 70
 	TransFlagStockTransferIn  = 72
+	TransFlagARReceipt        = 239
 	TransFlagEPurchaseOrder   = 260
 	TransFlagPurchaseInvoiceE = 310
 )
@@ -35,6 +36,7 @@ var transFlagMeta = map[int]int{
 	TransFlagSaleInvoice:     TransTypeSale,
 	TransFlagCreditNote:      TransTypeSale,
 	TransFlagInventoryAdjust: TransTypeInventory,
+	TransFlagARReceipt:       TransTypeSale,
 	TransFlagEPurchaseOrder:  TransTypePurchase,
 }
 
@@ -85,19 +87,19 @@ type TransactionListResponse struct {
 // --- Write models ---
 
 type CreateTransactionRequest struct {
-	DocNo      string                      `json:"doc_no" binding:"required"`
-	DocDate    string                      `json:"doc_date" binding:"required"` // YYYY-MM-DD
-	TransFlag  int                         `json:"trans_flag" binding:"required"`
-	CustCode   string                      `json:"cust_code"`
-	VatType    int                         `json:"vat_type"`    // 0=แยกนอก 1=รวมใน 2=ศูนย์%
-	VatRate    float64                     `json:"vat_rate"`    // เช่น 7
-	SaleCode   string                      `json:"sale_code"`
-	BranchCode string                      `json:"branch_code"`
-	WHCode     string                      `json:"wh_code"`
-	ShelfCode  string                      `json:"shelf_code"`
-	Remark     string                      `json:"remark"`
-	DocTime    string                      `json:"doc_time"` // HH:MM
-	Items      []CreateTransactionItemReq  `json:"items" binding:"required,min=1"`
+	DocNo      string                     `json:"doc_no" binding:"required"`
+	DocDate    string                     `json:"doc_date" binding:"required"` // YYYY-MM-DD
+	TransFlag  int                        `json:"trans_flag" binding:"required"`
+	CustCode   string                     `json:"cust_code"`
+	VatType    int                        `json:"vat_type"` // 0=แยกนอก 1=รวมใน 2=ศูนย์%
+	VatRate    float64                    `json:"vat_rate"` // เช่น 7
+	SaleCode   string                     `json:"sale_code"`
+	BranchCode string                     `json:"branch_code"`
+	WHCode     string                     `json:"wh_code"`
+	ShelfCode  string                     `json:"shelf_code"`
+	Remark     string                     `json:"remark"`
+	DocTime    string                     `json:"doc_time"` // HH:MM
+	Items      []CreateTransactionItemReq `json:"items" binding:"required,min=1"`
 }
 
 type CreateTransactionItemReq struct {

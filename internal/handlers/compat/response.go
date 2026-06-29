@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"sml-api-bybos/internal/api"
 	"sml-api-bybos/internal/db"
 	"sml-api-bybos/internal/middleware"
 )
@@ -35,7 +36,7 @@ func getPool(c *gin.Context, dbm *db.Manager) *pgxpool.Pool {
 	ctx := c.Request.Context()
 	pool, err := dbm.Get(ctx, c.GetString(middleware.TenantKey))
 	if err != nil {
-		errV3(c, http.StatusInternalServerError, err.Error())
+		api.Internal(c, "db_pool_error", "connect to SML database failed", err.Error())
 		return nil
 	}
 	return pool
