@@ -13,6 +13,8 @@ const (
 	TransFlagInventoryAdjust  = 66
 	TransFlagStockTransferOut = 70
 	TransFlagStockTransferIn  = 72
+	TransFlagPayment          = 19
+	TransFlagBillReceive      = 213
 	TransFlagARReceipt        = 239
 	TransFlagEPurchaseOrder   = 260
 	TransFlagPurchaseInvoiceE = 310
@@ -36,6 +38,8 @@ var transFlagMeta = map[int]int{
 	TransFlagSaleInvoice:     TransTypeSale,
 	TransFlagCreditNote:      TransTypeSale,
 	TransFlagInventoryAdjust: TransTypeInventory,
+	TransFlagPayment:         TransTypePurchase,
+	TransFlagBillReceive:     TransTypePurchase,
 	TransFlagARReceipt:       TransTypeSale,
 	TransFlagEPurchaseOrder:  TransTypePurchase,
 }

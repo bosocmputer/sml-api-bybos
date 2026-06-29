@@ -111,6 +111,9 @@ func main() {
 	dfh := handlers.NewDocFormatHandler(dbm)
 	v1.GET("/ic/doc-formats/by-code", dfh.GetByCode)
 	v1.GET("/ic/doc-formats", dfh.List)
+	dch := handlers.NewDocumentCandidateHandler(dbm)
+	v1.GET("/ic/document-candidates", dch.List)
+	v1.GET("/ic/document-candidates/:doc_no", dch.Get)
 	dnh := handlers.NewDocNoHandler(dbm)
 	v1.GET("/ic/doc-no/next", dnh.Next)
 

@@ -103,7 +103,7 @@ func (h *DocFormatHandler) GetByCode(c *gin.Context) {
 }
 
 // GET /api/v1/ic/doc-formats?screen_code=PO
-// screen_code: PO=ใบสั่งซื้อ, SI=ขายสินค้าและบริการ, SR=ใบสั่งขาย
+// If screen_code is omitted, all erp_doc_format rows are returned.
 func (h *DocFormatHandler) List(c *gin.Context) {
 	screenCode := strings.ToUpper(strings.TrimSpace(c.Query("screen_code")))
 
