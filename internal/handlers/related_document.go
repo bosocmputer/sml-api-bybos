@@ -1,0 +1,387 @@
+package handlers
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
+
+	"sml-api-bybos/internal/api"
+	"sml-api-bybos/internal/db"
+	"sml-api-bybos/internal/middleware"
+)
+
+const (
+	relatedDefaultDepth = 3
+	relatedMaxDepth     = 4
+	relatedMaxNodes     = 30
+)
+
+type RelatedDocumentHandler struct {
+	dbm *db.Manager
+}
+
+func NewRelatedDocumentHandler(dbm *db.Manager) *RelatedDocumentHandler {
+	return &RelatedDocumentHandler{dbm: dbm}
+}
+
+type RelatedDocumentGraph struct {
+	Root      RelatedDocumentNode      `json:"root"`
+	Nodes     []RelatedDocumentNode    `json:"nodes"`
+	Edges     []RelatedDocumentEdge    `json:"edges"`
+	Warnings  []RelatedDocumentWarning `json:"warnings,omitempty"`
+	Depth     int                      `json:"depth"`
+	Truncated bool                     `json:"truncated"`
+}
+
+type RelatedDocumentNode struct {
+	DocNo         string  `json:"doc_no"`
+	DocDate       string  `json:"doc_date"`
+	DocFormatCode string  `json:"doc_format_code"`
+	TransFlag     int     `json:"trans_flag"`
+	Table         string  `json:"table"`
+	PartyCode     string  `json:"party_code"`
+	PartyName     string  `json:"party_name"`
+	PartyType     string  `json:"party_type"`
+	TotalAmount   float64 `json:"total_amount"`
+	IsLockRecord  int     `json:"is_lock_record"`
+}
+
+type RelatedDocumentEdge struct {
+	FromDocNo    string `json:"from_doc_no"`
+	ToDocNo      string `json:"to_doc_no"`
+	Relation     string `json:"relation"`
+	SourceTable  string `json:"source_table"`
+	SourceColumn string `json:"source_column"`
+}
+
+type RelatedDocumentWarning struct {
+	Code    string `json:"code"`
+	DocNo   string `json:"doc_no,omitempty"`
+	Message string `json:"message"`
+}
+
+type relatedQueueItem struct {
+	docNo string
+	depth int
+}
+
+// Related returns a bounded graph of SML documents connected to doc_no. It uses
+// only DB relationships verified for PaperLess: ic_trans_detail.ref_doc_no,
+// ap_ar_trans_detail.billing_no, and ap_ar_trans_detail.doc_ref.
+func (h *RelatedDocumentHandler) Related(c *gin.Context) {
+	docNo := strings.TrimSpace(c.Param("doc_no"))
+	if docNo == "" {
+		api.BadRequest(c, "doc_no_required", "doc_no is required", nil)
+		return
+	}
+	docFormatCode := strings.ToUpper(strings.TrimSpace(c.Query("doc_format_code")))
+	depth := parseRelatedDepth(c.Query("depth"))
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	pool, err := h.dbm.Get(ctx, c.GetString(middleware.TenantKey))
+	if err != nil {
+		api.Internal(c, "db_pool_error", "could not get tenant database", err.Error())
+		return
+	}
+
+	root, err := findRelatedDocumentHeader(ctx, pool, docNo, docFormatCode)
+	if errors.Is(err, pgx.ErrNoRows) {
+		api.NotFound(c, "document_not_found", "no active document found for doc_no: "+docNo)
+		return
+	}
+	if err != nil {
+		api.Internal(c, "related_document_lookup_failed", "could not load document", err.Error())
+		return
+	}
+
+	graph, err := buildRelatedDocumentGraph(ctx, pool, root, depth)
+	if err != nil {
+		api.Internal(c, "related_documents_failed", "could not load related documents", err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": graph})
+}
+
+func parseRelatedDepth(value string) int {
+	depth, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || depth < 1 {
+		depth = relatedDefaultDepth
+	}
+	if depth > relatedMaxDepth {
+		depth = relatedMaxDepth
+	}
+	return depth
+}
+
+func buildRelatedDocumentGraph(ctx context.Context, q relatedDocumentQuerier, root RelatedDocumentNode, depth int) (RelatedDocumentGraph, error) {
+	nodes := map[string]RelatedDocumentNode{strings.ToUpper(root.DocNo): root}
+	edges := map[string]RelatedDocumentEdge{}
+	warnings := []RelatedDocumentWarning{}
+	processed := map[string]int{}
+	queue := []relatedQueueItem{{docNo: root.DocNo, depth: 0}}
+	truncated := false
+
+	for len(queue) > 0 {
+		item := queue[0]
+		queue = queue[1:]
+		key := strings.ToUpper(item.docNo)
+		if seenDepth, ok := processed[key]; ok && seenDepth <= item.depth {
+			continue
+		}
+		processed[key] = item.depth
+		if item.depth >= depth {
+			continue
+		}
+
+		foundEdges, err := findRelatedDocumentEdges(ctx, q, item.docNo)
+		if err != nil {
+			return RelatedDocumentGraph{}, err
+		}
+		for _, edge := range foundEdges {
+			if edge.FromDocNo == "" || edge.ToDocNo == "" || strings.EqualFold(edge.FromDocNo, edge.ToDocNo) {
+				continue
+			}
+			edgeKey := relatedEdgeKey(edge)
+			edges[edgeKey] = edge
+
+			for _, linkedDocNo := range []string{edge.FromDocNo, edge.ToDocNo} {
+				linkedKey := strings.ToUpper(linkedDocNo)
+				if _, ok := nodes[linkedKey]; ok {
+					continue
+				}
+				if len(nodes) >= relatedMaxNodes {
+					truncated = true
+					continue
+				}
+				node, err := findRelatedDocumentHeader(ctx, q, linkedDocNo, "")
+				if errors.Is(err, pgx.ErrNoRows) {
+					warnings = append(warnings, RelatedDocumentWarning{
+						Code:    "related_header_missing",
+						DocNo:   linkedDocNo,
+						Message: fmt.Sprintf("reference %s was found but header document was not found", linkedDocNo),
+					})
+					continue
+				}
+				if err != nil {
+					return RelatedDocumentGraph{}, err
+				}
+				nodes[linkedKey] = node
+				queue = append(queue, relatedQueueItem{docNo: linkedDocNo, depth: item.depth + 1})
+			}
+		}
+	}
+
+	nodeList := make([]RelatedDocumentNode, 0, len(nodes))
+	for _, node := range nodes {
+		nodeList = append(nodeList, node)
+	}
+	sortRelatedNodes(nodeList)
+
+	edgeList := make([]RelatedDocumentEdge, 0, len(edges))
+	for _, edge := range edges {
+		edgeList = append(edgeList, edge)
+	}
+	sort.Slice(edgeList, func(i, j int) bool {
+		if edgeList[i].FromDocNo == edgeList[j].FromDocNo {
+			return edgeList[i].ToDocNo < edgeList[j].ToDocNo
+		}
+		return edgeList[i].FromDocNo < edgeList[j].FromDocNo
+	})
+
+	return RelatedDocumentGraph{
+		Root:      root,
+		Nodes:     nodeList,
+		Edges:     edgeList,
+		Warnings:  dedupeRelatedWarnings(warnings),
+		Depth:     depth,
+		Truncated: truncated,
+	}, nil
+}
+
+func relatedEdgeKey(edge RelatedDocumentEdge) string {
+	return strings.ToUpper(edge.FromDocNo) + ">" + strings.ToUpper(edge.ToDocNo) + ":" + edge.SourceTable + "." + edge.SourceColumn
+}
+
+func dedupeRelatedWarnings(items []RelatedDocumentWarning) []RelatedDocumentWarning {
+	seen := map[string]bool{}
+	out := []RelatedDocumentWarning{}
+	for _, item := range items {
+		key := item.Code + ":" + strings.ToUpper(item.DocNo)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, item)
+	}
+	return out
+}
+
+func sortRelatedNodes(nodes []RelatedDocumentNode) {
+	sort.Slice(nodes, func(i, j int) bool {
+		ri := relatedDocumentRank(nodes[i])
+		rj := relatedDocumentRank(nodes[j])
+		if ri != rj {
+			return ri < rj
+		}
+		if nodes[i].DocDate != nodes[j].DocDate {
+			return nodes[i].DocDate < nodes[j].DocDate
+		}
+		return nodes[i].DocNo < nodes[j].DocNo
+	})
+}
+
+func relatedDocumentRank(node RelatedDocumentNode) int {
+	switch strings.ToUpper(strings.TrimSpace(node.DocFormatCode)) {
+	case "PO", "POP":
+		return 10
+	case "PA", "PUP":
+		return 20
+	case "PB", "PBV":
+		return 30
+	case "PV", "PVV":
+		return 40
+	}
+	switch node.TransFlag {
+	case 6:
+		return 10
+	case 12:
+		return 20
+	case 213:
+		return 30
+	case 19:
+		return 40
+	default:
+		return 100
+	}
+}
+
+func findRelatedDocumentHeader(ctx context.Context, q relatedDocumentQuerier, docNo, docFormatCode string) (RelatedDocumentNode, error) {
+	docNo = strings.TrimSpace(docNo)
+	docFormatCode = strings.ToUpper(strings.TrimSpace(docFormatCode))
+	args := []any{docNo}
+	filter := ""
+	if docFormatCode != "" {
+		filter = " AND upper(COALESCE(t.doc_format_code,'')) = $2"
+		args = append(args, docFormatCode)
+	}
+	query := `
+WITH candidates AS (
+    SELECT t.doc_no, t.doc_date, COALESCE(t.doc_format_code,'') AS doc_format_code, t.trans_flag,
+           'ic_trans' AS table_name,
+           COALESCE(t.cust_code,'') AS party_code,
+           CASE WHEN upper(COALESCE(t.doc_format_code,'')) LIKE 'P%' THEN 'AP' ELSE 'AR' END AS party_type,
+           COALESCE(ap.name_1, ar.name_1, '') AS party_name,
+           COALESCE(t.total_amount,0)::double precision AS total_amount,
+           COALESCE(t.is_lock_record,0) AS is_lock_record
+      FROM ic_trans t
+      LEFT JOIN ap_supplier ap ON ap.code = t.cust_code
+      LEFT JOIN ar_customer ar ON ar.code = t.cust_code
+     WHERE t.doc_no = $1 AND COALESCE(t.last_status,0)=0` + filter + `
+    UNION ALL
+    SELECT t.doc_no, t.doc_date, COALESCE(t.doc_format_code,'') AS doc_format_code, t.trans_flag,
+           'ap_ar_trans' AS table_name,
+           COALESCE(t.cust_code,'') AS party_code,
+           CASE WHEN upper(COALESCE(t.doc_format_code,'')) LIKE 'P%' THEN 'AP' ELSE 'AR' END AS party_type,
+           COALESCE(ap.name_1, ar.name_1, '') AS party_name,
+           COALESCE(t.total_after_vat, 0)::double precision AS total_amount,
+           COALESCE(t.is_lock_record,0) AS is_lock_record
+      FROM ap_ar_trans t
+      LEFT JOIN ap_supplier ap ON ap.code = t.cust_code
+      LEFT JOIN ar_customer ar ON ar.code = t.cust_code
+     WHERE t.doc_no = $1 AND COALESCE(t.last_status,0)=0` + filter + `
+)
+SELECT doc_no, doc_date, doc_format_code, trans_flag, table_name, party_code, party_type, party_name, total_amount, is_lock_record
+  FROM candidates
+ ORDER BY CASE table_name WHEN 'ic_trans' THEN 1 ELSE 2 END, doc_date DESC
+ LIMIT 1`
+
+	var node RelatedDocumentNode
+	var docDate time.Time
+	err := q.QueryRow(ctx, query, args...).Scan(
+		&node.DocNo,
+		&docDate,
+		&node.DocFormatCode,
+		&node.TransFlag,
+		&node.Table,
+		&node.PartyCode,
+		&node.PartyType,
+		&node.PartyName,
+		&node.TotalAmount,
+		&node.IsLockRecord,
+	)
+	if err != nil {
+		return node, err
+	}
+	node.DocDate = docDate.Format("2006-01-02")
+	return node, nil
+}
+
+func findRelatedDocumentEdges(ctx context.Context, q relatedDocumentQuerier, docNo string) ([]RelatedDocumentEdge, error) {
+	rows, err := q.Query(ctx, `
+SELECT from_doc_no, to_doc_no, relation, source_table, source_column
+FROM (
+    SELECT trim(ref_doc_no) AS from_doc_no,
+           trim(doc_no) AS to_doc_no,
+           'เอกสารอ้างอิงสินค้า/ซื้อ' AS relation,
+           'ic_trans_detail' AS source_table,
+           'ref_doc_no' AS source_column
+      FROM ic_trans_detail
+     WHERE COALESCE(last_status,0)=0
+       AND COALESCE(ref_doc_no,'') <> ''
+       AND (doc_no = $1 OR ref_doc_no = $1)
+     GROUP BY trim(ref_doc_no), trim(doc_no)
+    UNION ALL
+    SELECT trim(billing_no) AS from_doc_no,
+           trim(doc_no) AS to_doc_no,
+           'เอกสารรับวางบิล/ชำระอ้างอิงเอกสารซื้อ' AS relation,
+           'ap_ar_trans_detail' AS source_table,
+           'billing_no' AS source_column
+      FROM ap_ar_trans_detail
+     WHERE COALESCE(last_status,0)=0
+       AND COALESCE(billing_no,'') <> ''
+       AND (doc_no = $1 OR billing_no = $1)
+     GROUP BY trim(billing_no), trim(doc_no)
+    UNION ALL
+    SELECT trim(doc_ref) AS from_doc_no,
+           trim(doc_no) AS to_doc_no,
+           'เอกสารจ่ายชำระอ้างอิงใบรับวางบิล' AS relation,
+           'ap_ar_trans_detail' AS source_table,
+           'doc_ref' AS source_column
+      FROM ap_ar_trans_detail
+     WHERE COALESCE(last_status,0)=0
+       AND COALESCE(doc_ref,'') <> ''
+       AND (doc_no = $1 OR doc_ref = $1)
+     GROUP BY trim(doc_ref), trim(doc_no)
+) edges
+WHERE from_doc_no <> '' AND to_doc_no <> '' AND from_doc_no <> to_doc_no
+ORDER BY from_doc_no, to_doc_no, source_table, source_column`, docNo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	edges := []RelatedDocumentEdge{}
+	for rows.Next() {
+		var edge RelatedDocumentEdge
+		if err := rows.Scan(&edge.FromDocNo, &edge.ToDocNo, &edge.Relation, &edge.SourceTable, &edge.SourceColumn); err != nil {
+			return nil, err
+		}
+		edges = append(edges, edge)
+	}
+	return edges, rows.Err()
+}
+
+type relatedDocumentQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}

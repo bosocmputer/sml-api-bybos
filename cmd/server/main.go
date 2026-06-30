@@ -135,6 +135,8 @@ func main() {
 	// is_lock_record=1 (works across ic_trans and ap_ar_trans; idempotent).
 	lh := handlers.NewLockHandler(dbm)
 	v1.POST("/documents/:doc_no/lock", lh.Lock)
+	rdh := handlers.NewRelatedDocumentHandler(dbm)
+	v1.GET("/documents/:doc_no/related", rdh.Related)
 
 	addr := cfg.Server.Host + ":" + cfg.Server.Port
 	srv := &http.Server{
