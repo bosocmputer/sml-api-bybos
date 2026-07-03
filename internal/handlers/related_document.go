@@ -42,16 +42,23 @@ type RelatedDocumentGraph struct {
 }
 
 type RelatedDocumentNode struct {
-	DocNo         string  `json:"doc_no"`
-	DocDate       string  `json:"doc_date"`
-	DocFormatCode string  `json:"doc_format_code"`
-	TransFlag     int     `json:"trans_flag"`
-	Table         string  `json:"table"`
-	PartyCode     string  `json:"party_code"`
-	PartyName     string  `json:"party_name"`
-	PartyType     string  `json:"party_type"`
-	TotalAmount   float64 `json:"total_amount"`
-	IsLockRecord  int     `json:"is_lock_record"`
+	DocNo           string  `json:"doc_no"`
+	DocDate         string  `json:"doc_date"`
+	DocTime         string  `json:"doc_time,omitempty"`
+	DocFormatCode   string  `json:"doc_format_code"`
+	DocFormatName   string  `json:"doc_format_name,omitempty"`
+	TransFlag       int     `json:"trans_flag"`
+	TransFlagMenu   string  `json:"trans_flag_menu,omitempty"`
+	TransFlagNameTH string  `json:"trans_flag_name_th,omitempty"`
+	TransFlagNameEN string  `json:"trans_flag_name_en,omitempty"`
+	TransType       int     `json:"trans_type,omitempty"`
+	Table           string  `json:"table"`
+	PartyCode       string  `json:"party_code"`
+	PartyName       string  `json:"party_name"`
+	PartyType       string  `json:"party_type"`
+	TotalAmount     float64 `json:"total_amount"`
+	SourceDocNo     string  `json:"source_doc_no,omitempty"`
+	IsLockRecord    int     `json:"is_lock_record"`
 }
 
 type RelatedDocumentEdge struct {
@@ -197,6 +204,7 @@ func buildRelatedDocumentGraph(ctx context.Context, q relatedDocumentQuerier, ro
 		}
 		return edgeList[i].FromDocNo < edgeList[j].FromDocNo
 	})
+	root, nodeList = assignRelatedSourceDocNos(root, nodeList, edgeList)
 
 	return RelatedDocumentGraph{
 		Root:      root,
@@ -206,6 +214,72 @@ func buildRelatedDocumentGraph(ctx context.Context, q relatedDocumentQuerier, ro
 		Depth:     depth,
 		Truncated: truncated,
 	}, nil
+}
+
+func assignRelatedSourceDocNos(root RelatedDocumentNode, nodes []RelatedDocumentNode, edges []RelatedDocumentEdge) (RelatedDocumentNode, []RelatedDocumentNode) {
+	byDocNo := map[string]RelatedDocumentNode{}
+	for _, node := range nodes {
+		byDocNo[strings.ToUpper(strings.TrimSpace(node.DocNo))] = node
+	}
+
+	assign := func(node RelatedDocumentNode) RelatedDocumentNode {
+		node.SourceDocNo = bestRelatedSourceDocNo(node, edges, byDocNo)
+		if node.SourceDocNo == "" {
+			node.SourceDocNo = node.DocNo
+		}
+		return node
+	}
+
+	root = assign(root)
+	for i := range nodes {
+		nodes[i] = assign(nodes[i])
+	}
+	return root, nodes
+}
+
+func bestRelatedSourceDocNo(node RelatedDocumentNode, edges []RelatedDocumentEdge, byDocNo map[string]RelatedDocumentNode) string {
+	nodeNo := strings.ToUpper(strings.TrimSpace(node.DocNo))
+	nodeRank := relatedDocumentRank(node)
+	bestDocNo := ""
+	bestScore := 1 << 30
+	for _, edge := range edges {
+		if !strings.EqualFold(strings.TrimSpace(edge.ToDocNo), nodeNo) {
+			continue
+		}
+		fromDocNo := strings.TrimSpace(edge.FromDocNo)
+		if fromDocNo == "" || strings.EqualFold(fromDocNo, node.DocNo) {
+			continue
+		}
+		fromNode, ok := byDocNo[strings.ToUpper(fromDocNo)]
+		fromRank := 1000
+		if ok {
+			fromRank = relatedDocumentRank(fromNode)
+		}
+		rankDistance := nodeRank - fromRank
+		if rankDistance < 0 {
+			rankDistance = 100 + (-rankDistance)
+		}
+		score := relatedSourceColumnPriority(edge) + rankDistance*10
+		if score < bestScore || (score == bestScore && strings.Compare(fromDocNo, bestDocNo) < 0) {
+			bestScore = score
+			bestDocNo = fromDocNo
+		}
+	}
+	return bestDocNo
+}
+
+func relatedSourceColumnPriority(edge RelatedDocumentEdge) int {
+	source := strings.ToLower(strings.TrimSpace(edge.SourceTable + "." + edge.SourceColumn))
+	switch source {
+	case "ap_ar_trans_detail.doc_ref":
+		return 0
+	case "ap_ar_trans_detail.billing_no":
+		return 1
+	case "ic_trans_detail.ref_doc_no":
+		return 2
+	default:
+		return 5
+	}
 }
 
 func relatedEdgeKey(edge RelatedDocumentEdge) string {
@@ -276,7 +350,16 @@ func findRelatedDocumentHeader(ctx context.Context, q relatedDocumentQuerier, do
 	}
 	query := `
 WITH candidates AS (
-    SELECT t.doc_no, t.doc_date, COALESCE(t.doc_format_code,'') AS doc_format_code, t.trans_flag,
+    SELECT t.doc_no, t.doc_date, COALESCE(t.doc_time,'') AS doc_time,
+           COALESCE(t.doc_format_code,'') AS doc_format_code,
+           COALESCE((
+               SELECT NULLIF(f.name_1,'')
+                 FROM erp_doc_format f
+                WHERE lower(f.code) = lower(COALESCE(t.doc_format_code,''))
+                ORDER BY f.screen_code, f.code
+                LIMIT 1
+           ), '') AS doc_format_name,
+           t.trans_flag,
            'ic_trans' AS table_name,
            COALESCE(t.cust_code,'') AS party_code,
            CASE WHEN upper(COALESCE(t.doc_format_code,'')) LIKE 'P%' THEN 'AP' ELSE 'AR' END AS party_type,
@@ -288,19 +371,44 @@ WITH candidates AS (
       LEFT JOIN ar_customer ar ON ar.code = t.cust_code
      WHERE t.doc_no = $1 AND COALESCE(t.last_status,0)=0` + filter + `
     UNION ALL
-    SELECT t.doc_no, t.doc_date, COALESCE(t.doc_format_code,'') AS doc_format_code, t.trans_flag,
+    SELECT t.doc_no, t.doc_date, COALESCE(t.doc_time,'') AS doc_time,
+           COALESCE(t.doc_format_code,'') AS doc_format_code,
+           COALESCE((
+               SELECT NULLIF(f.name_1,'')
+                 FROM erp_doc_format f
+                WHERE lower(f.code) = lower(COALESCE(t.doc_format_code,''))
+                ORDER BY f.screen_code, f.code
+                LIMIT 1
+           ), '') AS doc_format_name,
+           t.trans_flag,
            'ap_ar_trans' AS table_name,
            COALESCE(t.cust_code,'') AS party_code,
            CASE WHEN upper(COALESCE(t.doc_format_code,'')) LIKE 'P%' THEN 'AP' ELSE 'AR' END AS party_type,
            COALESCE(ap.name_1, ar.name_1, '') AS party_name,
-           COALESCE(t.total_after_vat, 0)::double precision AS total_amount,
+           COALESCE(
+               NULLIF(t.total_after_vat, 0),
+               NULLIF(t.amount, 0),
+               NULLIF((
+                   SELECT SUM(COALESCE(d.sum_debt_amount, 0))
+                     FROM ap_ar_trans_detail d
+                    WHERE d.doc_no = t.doc_no
+                      AND COALESCE(d.last_status,0)=0
+               ), 0),
+               NULLIF((
+                   SELECT SUM(COALESCE(d.sum_pay_money, 0))
+                     FROM ap_ar_trans_detail d
+                    WHERE d.doc_no = t.doc_no
+                      AND COALESCE(d.last_status,0)=0
+               ), 0),
+               0
+           )::double precision AS total_amount,
            COALESCE(t.is_lock_record,0) AS is_lock_record
       FROM ap_ar_trans t
       LEFT JOIN ap_supplier ap ON ap.code = t.cust_code
       LEFT JOIN ar_customer ar ON ar.code = t.cust_code
      WHERE t.doc_no = $1 AND COALESCE(t.last_status,0)=0` + filter + `
 )
-SELECT doc_no, doc_date, doc_format_code, trans_flag, table_name, party_code, party_type, party_name, total_amount, is_lock_record
+SELECT doc_no, doc_date, doc_time, doc_format_code, doc_format_name, trans_flag, table_name, party_code, party_type, party_name, total_amount, is_lock_record
   FROM candidates
  ORDER BY CASE table_name WHEN 'ic_trans' THEN 1 ELSE 2 END, doc_date DESC
  LIMIT 1`
@@ -310,7 +418,9 @@ SELECT doc_no, doc_date, doc_format_code, trans_flag, table_name, party_code, pa
 	err := q.QueryRow(ctx, query, args...).Scan(
 		&node.DocNo,
 		&docDate,
+		&node.DocTime,
 		&node.DocFormatCode,
+		&node.DocFormatName,
 		&node.TransFlag,
 		&node.Table,
 		&node.PartyCode,
@@ -323,6 +433,12 @@ SELECT doc_no, doc_date, doc_format_code, trans_flag, table_name, party_code, pa
 		return node, err
 	}
 	node.DocDate = docDate.Format("2006-01-02")
+	if meta, ok := lookupTransFlagCatalog(node.TransFlag, node.Table); ok {
+		node.TransFlagMenu = meta.MenuCode
+		node.TransFlagNameTH = meta.NameTH
+		node.TransFlagNameEN = meta.NameEN
+		node.TransType = meta.Type
+	}
 	return node, nil
 }
 

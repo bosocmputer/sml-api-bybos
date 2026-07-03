@@ -55,6 +55,12 @@ func main() {
 	// ── API v1 ────────────────────────────────────────────────────────────────
 	v1 := r.Group("/api/v1")
 	v1.Use(middleware.Auth(cfg.APIKeys))
+
+	// SML auth uses the main registry database, so it must run before tenant
+	// resolution. It is still protected by the internal API key middleware.
+	ah := handlers.NewAuthHandler(dbm, cfg)
+	v1.POST("/auth/sml/login", ah.Login)
+
 	v1.Use(tenantMW)
 
 	// Products
@@ -135,6 +141,8 @@ func main() {
 	// is_lock_record=1 (works across ic_trans and ap_ar_trans; idempotent).
 	lh := handlers.NewLockHandler(dbm)
 	v1.POST("/documents/:doc_no/lock", lh.Lock)
+	dih := handlers.NewDocumentImageHandler(dbm)
+	v1.POST("/documents/:doc_no/images", dih.Replace)
 	rdh := handlers.NewRelatedDocumentHandler(dbm)
 	v1.GET("/documents/:doc_no/related", rdh.Related)
 

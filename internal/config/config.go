@@ -13,6 +13,11 @@ type Config struct {
 		Port string
 		Host string
 	}
+	Auth struct {
+		MainDatabase string
+		Provider     string
+		DataGroup    string
+	}
 	DB struct {
 		Host            string
 		Port            string
@@ -42,6 +47,9 @@ func Load() *Config {
 	c := &Config{}
 	c.Server.Port = getEnv("SERVER_PORT", "8200")
 	c.Server.Host = getEnv("SERVER_HOST", "0.0.0.0")
+	c.Auth.MainDatabase = strings.ToLower(strings.TrimSpace(getEnv("SML_AUTH_MAIN_DATABASE", "smlerpmainsmlgoh")))
+	c.Auth.Provider = strings.ToLower(strings.TrimSpace(getEnv("SML_AUTH_PROVIDER", "smlgoh")))
+	c.Auth.DataGroup = strings.ToLower(strings.TrimSpace(getEnv("SML_AUTH_DATAGROUP", "sml")))
 
 	c.DB.Host = getEnv("SML_DB_HOST", "192.168.2.248")
 	c.DB.Port = getEnv("SML_DB_PORT", "5432")

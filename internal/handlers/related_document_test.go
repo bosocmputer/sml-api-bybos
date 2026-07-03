@@ -59,3 +59,62 @@ func TestRelatedEdgeAndWarningDedupe(t *testing.T) {
 		t.Fatalf("dedupeRelatedWarnings len = %d, want 2", len(warnings))
 	}
 }
+
+func TestAssignRelatedSourceDocNosPrefersImmediateSource(t *testing.T) {
+	root := RelatedDocumentNode{DocNo: "PV26060001", DocFormatCode: "PV"}
+	nodes := []RelatedDocumentNode{
+		{DocNo: "PO26060001", DocFormatCode: "PO"},
+		{DocNo: "PA26060001", DocFormatCode: "PA"},
+		{DocNo: "PB26060001", DocFormatCode: "PB"},
+		{DocNo: "PV26060001", DocFormatCode: "PV"},
+	}
+	edges := []RelatedDocumentEdge{
+		{FromDocNo: "PO26060001", ToDocNo: "PA26060001", SourceTable: "ic_trans_detail", SourceColumn: "ref_doc_no"},
+		{FromDocNo: "PA26060001", ToDocNo: "PB26060001", SourceTable: "ap_ar_trans_detail", SourceColumn: "billing_no"},
+		{FromDocNo: "PA26060001", ToDocNo: "PV26060001", SourceTable: "ap_ar_trans_detail", SourceColumn: "billing_no"},
+		{FromDocNo: "PB26060001", ToDocNo: "PV26060001", SourceTable: "ap_ar_trans_detail", SourceColumn: "doc_ref"},
+	}
+
+	root, nodes = assignRelatedSourceDocNos(root, nodes, edges)
+	if root.SourceDocNo != "PB26060001" {
+		t.Fatalf("root SourceDocNo = %q, want PB26060001", root.SourceDocNo)
+	}
+
+	got := map[string]string{}
+	for _, node := range nodes {
+		got[node.DocNo] = node.SourceDocNo
+	}
+	want := map[string]string{
+		"PO26060001": "PO26060001",
+		"PA26060001": "PO26060001",
+		"PB26060001": "PA26060001",
+		"PV26060001": "PB26060001",
+	}
+	for docNo, sourceDocNo := range want {
+		if got[docNo] != sourceDocNo {
+			t.Fatalf("%s SourceDocNo = %q, want %q", docNo, got[docNo], sourceDocNo)
+		}
+	}
+}
+
+func TestLookupTransFlagCatalogForPaperlessFlow(t *testing.T) {
+	tests := []struct {
+		flag  int
+		table string
+		want  string
+	}{
+		{flag: 6, table: "ic_trans", want: "บันทึกใบสั่งซื้อ"},
+		{flag: 12, table: "ic_trans", want: "ซื้อสินค้า"},
+		{flag: 213, table: "ap_ar_trans", want: "ใบรับวางบิล(เจ้าหนี้)"},
+		{flag: 19, table: "ap_ar_trans", want: "จ่ายชำระหนี้(เจ้าหนี้)"},
+	}
+	for _, tc := range tests {
+		got, ok := lookupTransFlagCatalog(tc.flag, tc.table)
+		if !ok {
+			t.Fatalf("lookupTransFlagCatalog(%d, %q) not found", tc.flag, tc.table)
+		}
+		if got.NameTH != tc.want {
+			t.Fatalf("lookupTransFlagCatalog(%d, %q).NameTH = %q, want %q", tc.flag, tc.table, got.NameTH, tc.want)
+		}
+	}
+}

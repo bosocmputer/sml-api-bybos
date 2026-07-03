@@ -183,6 +183,16 @@ http://localhost:8200/openapi.json
 | `GET` | `/api/v1/ic/doc-formats/by-code?doc_format_code=PO` | ค้นหารูปแบบเอกสารด้วย `erp_doc_format.code` และคืน `screen_code` ของรายการนั้น |
 | `GET` | `/api/v1/ic/doc-no/next` | ดูเลขเอกสารถัดไปจาก SML สำหรับ `saleorder`, `saleinvoice`, `purchaseorder`, `receipt` |
 
+### PaperLess Document Finalization
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/documents/:doc_no/images` | Replace รูป snapshot เอกสารใน `public.sml_doc_images` ทั้ง tenant DB และ `${tenant}_images` สูงสุด 8 JPEG pages |
+| `POST` | `/api/v1/documents/:doc_no/lock` | Lock เอกสาร SML หลัง PaperLess ส่งรูปและ final evidence สำเร็จ |
+| `GET` | `/api/v1/documents/:doc_no/related` | กราฟเอกสารอ้างอิงสำหรับ PaperLess |
+
+`/documents/:doc_no/images` ต้องส่ง `images[]` ที่มี `pageNo`, `contentType=image/jpeg`, `sha256`, และ `data` base64. Endpoint นี้ replace rows เดิมของ `image_id=doc_no` เพื่อให้ retry ไม่สร้างรูปซ้ำ.
+
 ### Accounts Receivable / Customers (`ar`)
 
 | Method | Path | Description |
