@@ -202,7 +202,7 @@ func TestNextStepMarketplaceOrdersReturnsBoundedData(t *testing.T) {
 	r := nextStepTestRouter(h)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/orders?cust_code=C001&date_from=2026-07-01&date_to=2026-07-03&page=2&size=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orders?cust_code=C001&date_from=2026-07-01&date_to=2026-07-03&page=2&size=1&search=MQT2607", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
@@ -214,6 +214,9 @@ func TestNextStepMarketplaceOrdersReturnsBoundedData(t *testing.T) {
 	}
 	if args["cust_code"] != "C001" || args["date_from"] != "2026-07-01" || args["date_to"] != "2026-07-03" || args["doc_prefix_like"] != "MQT%" {
 		t.Fatalf("unexpected args = %#v", args)
+	}
+	if args["search"] != "MQT2607" || args["search_like"] != "%MQT2607%" {
+		t.Fatalf("search args = %#v", args)
 	}
 	if args["size"] != 1 || args["offset"] != 1 {
 		t.Fatalf("pagination args = %#v", args)
@@ -228,6 +231,9 @@ func TestNextStepMarketplaceOrdersReturnsBoundedData(t *testing.T) {
 	}
 	if !got.Success || got.Data.Summary.TotalOrders != 1 || got.Data.Meta.Total != 1 {
 		t.Fatalf("unexpected response = %+v", got)
+	}
+	if got.Data.Meta.Search != "MQT2607" {
+		t.Fatalf("meta search = %q", got.Data.Meta.Search)
 	}
 	if got.Data.Summary.StatusCounts["success"] != 1 {
 		t.Fatalf("status_counts = %#v", got.Data.Summary.StatusCounts)

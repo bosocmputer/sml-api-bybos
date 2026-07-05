@@ -798,6 +798,10 @@
           "source": {
             "type": "string",
             "example": "sml.ic_trans"
+          },
+          "search": {
+            "type": "string",
+            "example": "MQT2607"
           }
         }
       },
@@ -3575,6 +3579,14 @@
             "schema": {
               "type": "string",
               "format": "date"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Optional search against MQT doc_no, remark, sale code, or related invoice doc_no.",
+            "schema": {
+              "type": "string"
             }
           },
           {

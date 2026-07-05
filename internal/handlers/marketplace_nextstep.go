@@ -84,6 +84,7 @@ type NextStepMarketplaceMeta struct {
 	DateTo    string `json:"date_to"`
 	DateBasis string `json:"date_basis"`
 	Source    string `json:"source"`
+	Search    string `json:"search,omitempty"`
 	Page      int    `json:"page"`
 	Size      int    `json:"size"`
 	Total     int    `json:"total"`
@@ -110,6 +111,7 @@ func (h *NextStepMarketplaceHandler) Orders(c *gin.Context) {
 		api.BadRequest(c, "invalid_date_range", errMsg, nil)
 		return
 	}
+	search := strings.TrimSpace(c.Query("search"))
 	page, size := nextStepPageParams(c)
 	offset := (page - 1) * size
 
@@ -128,6 +130,8 @@ func (h *NextStepMarketplaceHandler) Orders(c *gin.Context) {
 		"date_from":       dateFrom,
 		"date_to":         dateTo,
 		"doc_prefix_like": nextStepDocPrefix + "%",
+		"search":          search,
+		"search_like":     "%" + search + "%",
 		"size":            size,
 		"offset":          offset,
 	}
@@ -155,6 +159,7 @@ func (h *NextStepMarketplaceHandler) Orders(c *gin.Context) {
 			DateTo:    dateTo,
 			DateBasis: "ic_qt.doc_date",
 			Source:    "sml.ic_trans",
+			Search:    search,
 			Page:      page,
 			Size:      size,
 			Total:     summary.TotalOrders,
@@ -428,6 +433,22 @@ WITH base_orders AS (
     AND ic_qt.doc_no LIKE @doc_prefix_like
     AND ic_qt.doc_date >= @date_from::date
     AND ic_qt.doc_date <= @date_to::date
+    AND (
+      @search = ''
+      OR ic_qt.doc_no ILIKE @search_like
+      OR COALESCE(ic_qt.remark, '') ILIKE @search_like
+      OR COALESCE(ic_qt.sale_code, '') ILIKE @search_like
+      OR EXISTS (
+        SELECT 1
+        FROM ap_ar_trans_detail ap_so_search
+        JOIN ap_ar_trans_detail ap_inv_search
+          ON ap_inv_search.billing_no = ap_so_search.doc_no
+         AND ap_inv_search.trans_flag = 44
+        WHERE ap_so_search.billing_no = ic_qt.doc_no
+          AND ap_so_search.trans_flag = 36
+          AND ap_inv_search.doc_no ILIKE @search_like
+      )
+    )
 ),
 lifecycle AS (
   SELECT
