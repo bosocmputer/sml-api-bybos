@@ -17,13 +17,15 @@ import (
 )
 
 type fakeNextStepPool struct {
-	summary  NextStepMarketplaceSummary
-	orders   []NextStepMarketplaceOrder
-	trend    []NextStepMarketplaceTrendPoint
-	rowErr   error
-	queryErr error
-	lastSQL  string
-	lastArgs []any
+	summary      NextStepMarketplaceSummary
+	orders       []NextStepMarketplaceOrder
+	trend        []NextStepMarketplaceTrendPoint
+	rowErr       error
+	queryErr     error
+	lastSQL      string
+	lastArgs     []any
+	orderQueries int
+	trendQueries int
 }
 
 func (p *fakeNextStepPool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
@@ -39,8 +41,10 @@ func (p *fakeNextStepPool) Query(ctx context.Context, sql string, args ...any) (
 		return nil, p.queryErr
 	}
 	if strings.Contains(sql, "GROUP BY doc_date") {
+		p.trendQueries++
 		return &fakeNextStepTrendRows{trend: p.trend, idx: -1}, nil
 	}
+	p.orderQueries++
 	return &fakeNextStepRows{orders: p.orders, idx: -1}, nil
 }
 
@@ -299,6 +303,59 @@ func TestNextStepMarketplaceOrdersReturnsBoundedData(t *testing.T) {
 	}
 	if got.Data.Trend[2].Date != "2026-07-03" || got.Data.Trend[2].TotalAmount != 1200 {
 		t.Fatalf("trend[2] = %+v", got.Data.Trend[2])
+	}
+}
+
+func TestNextStepMarketplaceOrdersCanSkipOrderRows(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	pool := &fakeNextStepPool{
+		summary: NextStepMarketplaceSummary{
+			TotalOrders:  2,
+			TotalAmount:  2400,
+			PendingCount: 1,
+			SuccessCount: 1,
+		},
+		orders: []NextStepMarketplaceOrder{
+			{DocNo: "MQT26070001", DocDate: "2026-07-01", TotalAmount: 1200, Status: "success"},
+		},
+		trend: []NextStepMarketplaceTrendPoint{
+			{Date: "2026-07-01", TotalAmount: 1200},
+			{Date: "2026-07-02", TotalAmount: 1200},
+		},
+	}
+	h := &NextStepMarketplaceHandler{
+		getPool: func(ctx context.Context, tenant string) (nextStepMarketplaceQuerier, error) {
+			return pool, nil
+		},
+	}
+	r := nextStepTestRouter(h)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/orders?cust_code=C001&date_from=2026-07-01&date_to=2026-07-02&include_orders=false", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	if pool.trendQueries != 1 || pool.orderQueries != 0 {
+		t.Fatalf("query counts = trend %d order %d, want trend 1 order 0", pool.trendQueries, pool.orderQueries)
+	}
+	var got struct {
+		Success bool                              `json:"success"`
+		Data    NextStepMarketplaceOrdersResponse `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Data.Orders) != 0 {
+		t.Fatalf("orders = %+v, want empty when include_orders=false", got.Data.Orders)
+	}
+	if got.Data.Summary.TotalOrders != 2 || got.Data.Summary.StatusCounts["pending"] != 1 {
+		t.Fatalf("summary = %+v", got.Data.Summary)
+	}
+	if len(got.Data.Trend) != 2 || got.Data.Trend[1].TotalAmount != 1200 {
+		t.Fatalf("trend = %+v", got.Data.Trend)
 	}
 }
 

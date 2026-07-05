@@ -118,6 +118,7 @@ func (h *NextStepMarketplaceHandler) Orders(c *gin.Context) {
 		return
 	}
 	search := strings.TrimSpace(c.Query("search"))
+	includeOrders := parseNextStepIncludeOrders(c.Query("include_orders"))
 	page, size := nextStepPageParams(c)
 	offset := (page - 1) * size
 
@@ -154,10 +155,13 @@ func (h *NextStepMarketplaceHandler) Orders(c *gin.Context) {
 		return
 	}
 
-	orders, err := h.queryOrders(ctx, pool, args)
-	if err != nil {
-		api.Internal(c, "nextstep_orders_error", "query NextStep marketplace orders failed", err.Error())
-		return
+	orders := []NextStepMarketplaceOrder{}
+	if includeOrders {
+		orders, err = h.queryOrders(ctx, pool, args)
+		if err != nil {
+			api.Internal(c, "nextstep_orders_error", "query NextStep marketplace orders failed", err.Error())
+			return
+		}
 	}
 
 	api.OK(c, NextStepMarketplaceOrdersResponse{
@@ -435,6 +439,15 @@ func nextStepPageParams(c *gin.Context) (int, int) {
 		size = nextStepDefaultPageSize
 	}
 	return page, size
+}
+
+func parseNextStepIncludeOrders(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "0", "false", "no", "n":
+		return false
+	default:
+		return true
+	}
 }
 
 func nextStepStatusCounts(summary NextStepMarketplaceSummary) map[string]int {
