@@ -14,9 +14,10 @@ type Config struct {
 		Host string
 	}
 	Auth struct {
-		MainDatabase string
-		Provider     string
-		DataGroup    string
+		MainDatabase          string
+		Provider              string
+		DataGroup             string
+		ImageTemplateDatabase string
 	}
 	DB struct {
 		Host            string
@@ -50,6 +51,7 @@ func Load() *Config {
 	c.Auth.MainDatabase = strings.ToLower(strings.TrimSpace(getEnv("SML_AUTH_MAIN_DATABASE", "smlerpmainsmlgoh")))
 	c.Auth.Provider = strings.ToLower(strings.TrimSpace(getEnv("SML_AUTH_PROVIDER", "smlgoh")))
 	c.Auth.DataGroup = strings.ToLower(strings.TrimSpace(getEnv("SML_AUTH_DATAGROUP", "sml")))
+	c.Auth.ImageTemplateDatabase = strings.ToLower(strings.TrimSpace(getEnv("SML_IMAGE_TEMPLATE_DATABASE", "iampcoffee_images")))
 
 	c.DB.Host = getEnv("SML_DB_HOST", "192.168.2.248")
 	c.DB.Port = getEnv("SML_DB_PORT", "5432")

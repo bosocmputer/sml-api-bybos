@@ -88,6 +88,11 @@ func (e documentImageValidationError) Error() string {
 	return e.message
 }
 
+func isMissingPostgresDatabaseError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "3D000"
+}
+
 type documentImageExec interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
@@ -149,6 +154,14 @@ func (h *DocumentImageHandler) Replace(c *gin.Context) {
 
 	imagePool, err := h.dbm.Get(ctx, productImageDatabaseName(tenant))
 	if err != nil {
+		if isMissingPostgresDatabaseError(err) {
+			imageDatabase := productImageDatabaseName(tenant)
+			api.Error(c, http.StatusFailedDependency, "tenant_image_database_missing", "tenant image database is not provisioned", gin.H{
+				"tenant":        tenant,
+				"imageDatabase": imageDatabase,
+			})
+			return
+		}
 		api.Internal(c, "image_db_pool_error", "could not get tenant image database", err.Error())
 		return
 	}
@@ -157,8 +170,8 @@ func (h *DocumentImageHandler) Replace(c *gin.Context) {
 		api.Internal(c, "document_images_replace_failed", "could not replace document images", err.Error())
 		return
 	}
-	if err := replaceDocumentImages(ctx, mainTx, docNo, images, false); err != nil {
-		api.Internal(c, "document_images_metadata_replace_failed", "could not replace document image metadata", err.Error())
+	if err := replaceDocumentImages(ctx, mainTx, docNo, images, true); err != nil {
+		api.Internal(c, "document_images_metadata_replace_failed", "could not replace document images in tenant database", err.Error())
 		return
 	}
 	if err := mainTx.Commit(ctx); err != nil {

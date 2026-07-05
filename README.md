@@ -101,6 +101,42 @@ databaseName: SML1_2026
 **Tenants ที่รองรับ** ขึ้นกับ `ALLOWED_TENANTS` ของ instance นั้น ๆ  
 ตัวอย่างที่ใช้งานกับ BillFlow ตอนนี้: `sml1_2026`, `aoy`, `data1_test`
 
+### Tenant Image DB Preflight
+
+PaperLess document snapshots require both databases to exist:
+
+- Main tenant DB: `${tenant}`
+- Image DB: `${tenant}_images`
+
+Both databases must contain `public.sml_doc_images` with the same schema. Run this before enabling a tenant or before customer smoke tests:
+
+```bash
+go run ./cmd/verify-sml-tenant --tenant stpt --template iampcoffee_images
+go run ./cmd/verify-sml-tenant --all-allowed --template iampcoffee_images
+```
+
+In Docker deployments the same binaries are copied into the runtime image:
+
+```bash
+docker exec paperless-prod-sml-api ./verify-sml-tenant --tenant stpt --template iampcoffee_images
+```
+
+The runtime API also exposes a readiness endpoint for PaperLess login checks:
+
+```bash
+curl -H "X-Api-Key: $API_KEY" "http://localhost:8201/api/v1/tenants/readiness?tenant=stpt"
+```
+
+If the main DB exists but the image DB is missing because the tenant was created directly in PostgreSQL, provision it explicitly. The command is dry-run by default:
+
+```bash
+go run ./cmd/provision-sml-image-db --tenant stpt --template iampcoffee_images
+go run ./cmd/provision-sml-image-db --tenant stpt --template iampcoffee_images --apply
+go run ./cmd/verify-sml-tenant --tenant stpt --template iampcoffee_images
+```
+
+The provision command creates only `${tenant}_images`, copies no image data from the template, and builds `public.sml_doc_images` from a real `_images` schema. If a just-created image DB is wrong and still empty, drop only that `${tenant}_images` database after customer approval.
+
 ---
 
 ## Swagger UI

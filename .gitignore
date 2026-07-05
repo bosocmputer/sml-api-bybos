@@ -4,3 +4,4 @@
 *.test
 sml-api-bybos
 /bin/
+.serena/

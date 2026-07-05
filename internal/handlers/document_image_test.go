@@ -178,18 +178,19 @@ func TestReplaceDocumentImagesWritesDeleteThenInsert(t *testing.T) {
 	}
 }
 
-func TestReplaceDocumentImagesMetadataOmitsBinaryPayload(t *testing.T) {
+func TestReplaceDocumentImagesTenantDatabaseIncludesBinaryPayload(t *testing.T) {
 	exec := &recordedDocumentImageExec{}
-	images := []preparedDocumentImage{{PageNo: 1, GUID: "guid-1", Bytes: []byte{0xff, 0xd8, 0xff}}}
+	jpeg := []byte{0xff, 0xd8, 0xff}
+	images := []preparedDocumentImage{{PageNo: 1, GUID: "guid-1", Bytes: jpeg}}
 
-	if err := replaceDocumentImages(context.Background(), exec, "PO26060001", images, false); err != nil {
-		t.Fatalf("replace metadata failed: %v", err)
+	if err := replaceDocumentImages(context.Background(), exec, "PO26060001", images, true); err != nil {
+		t.Fatalf("replace tenant images failed: %v", err)
 	}
 	if len(exec.calls) != 3 {
 		t.Fatalf("calls = %d, want 3", len(exec.calls))
 	}
-	if exec.calls[2].args[1] != nil {
-		t.Fatalf("metadata image_file arg = %#v, want nil", exec.calls[2].args[1])
+	if got, ok := exec.calls[2].args[1].([]byte); !ok || string(got) != string(jpeg) {
+		t.Fatalf("tenant image_file arg = %#v, want jpeg bytes", exec.calls[2].args[1])
 	}
 }
 

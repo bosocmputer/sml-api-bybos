@@ -36,11 +36,20 @@ type smlLoginUser struct {
 }
 
 type smlLoginDatabase struct {
-	DataGroup    string `json:"dataGroup"`
-	DataCode     string `json:"dataCode"`
-	DataName     string `json:"dataName"`
-	DatabaseName string `json:"databaseName"`
-	Tenant       string `json:"tenant"`
+	DataGroup    string              `json:"dataGroup"`
+	DataCode     string              `json:"dataCode"`
+	DataName     string              `json:"dataName"`
+	DatabaseName string              `json:"databaseName"`
+	Tenant       string              `json:"tenant"`
+	Readiness    *smlTenantReadiness `json:"readiness,omitempty"`
+}
+
+type smlTenantReadiness struct {
+	OK            bool   `json:"ok"`
+	Status        string `json:"status"`
+	Message       string `json:"message"`
+	Tenant        string `json:"tenant"`
+	ImageDatabase string `json:"imageDatabase"`
 }
 
 type smlLoginResult struct {
@@ -104,6 +113,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		api.Forbidden(c, "auth_database_empty", "user has no allowed database", nil)
 		return
 	}
+	h.attachDatabaseReadiness(c.Request.Context(), pool, databases)
 
 	var selected *smlLoginDatabase
 	if strings.TrimSpace(req.DatabaseName) != "" {
@@ -200,6 +210,51 @@ ORDER BY COALESCE(dl.data_code,'')
 		return strings.ToLower(out[i].DataCode) < strings.ToLower(out[j].DataCode)
 	})
 	return out, nil
+}
+
+func (h *AuthHandler) attachDatabaseReadiness(ctx context.Context, q pgxQuerier, databases []smlLoginDatabase) {
+	existing := map[string]bool{}
+	rows, err := q.Query(ctx, `SELECT lower(datname) FROM pg_database`)
+	if err != nil {
+		for i := range databases {
+			databases[i].Readiness = &smlTenantReadiness{
+				OK:            false,
+				Status:        "unknown",
+				Message:       "cannot verify database readiness right now",
+				Tenant:        databases[i].Tenant,
+				ImageDatabase: productImageDatabaseName(databases[i].Tenant),
+			}
+		}
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err == nil {
+			existing[strings.ToLower(strings.TrimSpace(name))] = true
+		}
+	}
+	for i := range databases {
+		tenant := databases[i].Tenant
+		imageDatabase := productImageDatabaseName(tenant)
+		readiness := &smlTenantReadiness{
+			OK:            true,
+			Status:        "ready",
+			Message:       "พร้อมใช้งาน",
+			Tenant:        tenant,
+			ImageDatabase: imageDatabase,
+		}
+		if !existing[tenant] {
+			readiness.OK = false
+			readiness.Status = "main_db_missing"
+			readiness.Message = "ไม่พบฐานข้อมูล SML หลัก"
+		} else if !existing[imageDatabase] {
+			readiness.OK = false
+			readiness.Status = "image_db_missing"
+			readiness.Message = "ยังไม่มีฐานข้อมูลรูป SML"
+		}
+		databases[i].Readiness = readiness
+	}
 }
 
 type pgxQuerier interface {
