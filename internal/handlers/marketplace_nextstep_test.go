@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -18,6 +19,7 @@ import (
 type fakeNextStepPool struct {
 	summary  NextStepMarketplaceSummary
 	orders   []NextStepMarketplaceOrder
+	trend    []NextStepMarketplaceTrendPoint
 	rowErr   error
 	queryErr error
 	lastSQL  string
@@ -35,6 +37,9 @@ func (p *fakeNextStepPool) Query(ctx context.Context, sql string, args ...any) (
 	p.lastArgs = args
 	if p.queryErr != nil {
 		return nil, p.queryErr
+	}
+	if strings.Contains(sql, "GROUP BY doc_date") {
+		return &fakeNextStepTrendRows{trend: p.trend, idx: -1}, nil
 	}
 	return &fakeNextStepRows{orders: p.orders, idx: -1}, nil
 }
@@ -123,6 +128,48 @@ func (r *fakeNextStepRows) Conn() *pgx.Conn {
 	return nil
 }
 
+type fakeNextStepTrendRows struct {
+	trend []NextStepMarketplaceTrendPoint
+	idx   int
+	err   error
+}
+
+func (r *fakeNextStepTrendRows) Close() {}
+func (r *fakeNextStepTrendRows) Err() error {
+	return r.err
+}
+func (r *fakeNextStepTrendRows) CommandTag() pgconn.CommandTag {
+	return pgconn.CommandTag{}
+}
+func (r *fakeNextStepTrendRows) FieldDescriptions() []pgconn.FieldDescription {
+	return nil
+}
+func (r *fakeNextStepTrendRows) Next() bool {
+	if r.idx+1 >= len(r.trend) {
+		return false
+	}
+	r.idx++
+	return true
+}
+func (r *fakeNextStepTrendRows) Scan(dest ...any) error {
+	if r.idx < 0 || r.idx >= len(r.trend) {
+		return errors.New("scan before next")
+	}
+	point := r.trend[r.idx]
+	*(dest[0].(*string)) = point.Date
+	*(dest[1].(*float64)) = point.TotalAmount
+	return nil
+}
+func (r *fakeNextStepTrendRows) Values() ([]any, error) {
+	return nil, nil
+}
+func (r *fakeNextStepTrendRows) RawValues() [][]byte {
+	return nil
+}
+func (r *fakeNextStepTrendRows) Conn() *pgx.Conn {
+	return nil
+}
+
 func TestNextStepMarketplaceOrdersRequiresCustCode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -190,6 +237,9 @@ func TestNextStepMarketplaceOrdersReturnsBoundedData(t *testing.T) {
 				Status:        "success",
 			},
 		},
+		trend: []NextStepMarketplaceTrendPoint{
+			{Date: "2026-07-03", TotalAmount: 1200},
+		},
 	}
 	h := &NextStepMarketplaceHandler{
 		getPool: func(ctx context.Context, tenant string) (nextStepMarketplaceQuerier, error) {
@@ -240,6 +290,15 @@ func TestNextStepMarketplaceOrdersReturnsBoundedData(t *testing.T) {
 	}
 	if len(got.Data.Orders) != 1 || got.Data.Orders[0].DocNo != "MQT26070001" {
 		t.Fatalf("orders = %+v", got.Data.Orders)
+	}
+	if len(got.Data.Trend) != 3 {
+		t.Fatalf("trend length = %d, trend=%+v", len(got.Data.Trend), got.Data.Trend)
+	}
+	if got.Data.Trend[0].Date != "2026-07-01" || got.Data.Trend[0].TotalAmount != 0 {
+		t.Fatalf("trend[0] = %+v", got.Data.Trend[0])
+	}
+	if got.Data.Trend[2].Date != "2026-07-03" || got.Data.Trend[2].TotalAmount != 1200 {
+		t.Fatalf("trend[2] = %+v", got.Data.Trend[2])
 	}
 }
 

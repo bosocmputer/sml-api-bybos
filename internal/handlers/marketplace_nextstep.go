@@ -76,6 +76,11 @@ type NextStepMarketplaceOrder struct {
 	Status         string  `json:"status"`
 }
 
+type NextStepMarketplaceTrendPoint struct {
+	Date        string  `json:"date"`
+	TotalAmount float64 `json:"total_amount"`
+}
+
 type NextStepMarketplaceMeta struct {
 	Tenant    string `json:"tenant"`
 	CustCode  string `json:"cust_code"`
@@ -91,9 +96,10 @@ type NextStepMarketplaceMeta struct {
 }
 
 type NextStepMarketplaceOrdersResponse struct {
-	Summary NextStepMarketplaceSummary `json:"summary"`
-	Orders  []NextStepMarketplaceOrder `json:"orders"`
-	Meta    NextStepMarketplaceMeta    `json:"meta"`
+	Summary NextStepMarketplaceSummary      `json:"summary"`
+	Orders  []NextStepMarketplaceOrder      `json:"orders"`
+	Trend   []NextStepMarketplaceTrendPoint `json:"trend"`
+	Meta    NextStepMarketplaceMeta         `json:"meta"`
 }
 
 // Orders exposes NextStep marketplace MQT order lifecycle from the SML tenant DB.
@@ -142,6 +148,12 @@ func (h *NextStepMarketplaceHandler) Orders(c *gin.Context) {
 		return
 	}
 
+	trend, err := h.queryTrend(ctx, pool, args, dateFrom, dateTo)
+	if err != nil {
+		api.Internal(c, "nextstep_trend_error", "query NextStep marketplace trend failed", err.Error())
+		return
+	}
+
 	orders, err := h.queryOrders(ctx, pool, args)
 	if err != nil {
 		api.Internal(c, "nextstep_orders_error", "query NextStep marketplace orders failed", err.Error())
@@ -151,6 +163,7 @@ func (h *NextStepMarketplaceHandler) Orders(c *gin.Context) {
 	api.OK(c, NextStepMarketplaceOrdersResponse{
 		Summary: summary,
 		Orders:  orders,
+		Trend:   trend,
 		Meta: NextStepMarketplaceMeta{
 			Tenant:    tenant,
 			CustCode:  custCode,
@@ -200,6 +213,33 @@ FROM order_amounts`, args).Scan(
 	}
 	summary.StatusCounts = nextStepStatusCounts(summary)
 	return summary, nil
+}
+
+func (h *NextStepMarketplaceHandler) queryTrend(ctx context.Context, pool nextStepMarketplaceQuerier, args pgx.NamedArgs, dateFrom, dateTo string) ([]NextStepMarketplaceTrendPoint, error) {
+	rows, err := pool.Query(ctx, nextStepMarketplaceCTE+`
+SELECT
+  doc_date::text AS date,
+  COALESCE(SUM(total_amount), 0)::float8 AS total_amount
+FROM order_amounts
+GROUP BY doc_date
+ORDER BY doc_date`, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	amountByDate := map[string]float64{}
+	for rows.Next() {
+		var point NextStepMarketplaceTrendPoint
+		if err := rows.Scan(&point.Date, &point.TotalAmount); err != nil {
+			return nil, err
+		}
+		amountByDate[point.Date] = point.TotalAmount
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return fillNextStepTrend(dateFrom, dateTo, amountByDate), nil
 }
 
 func (h *NextStepMarketplaceHandler) queryOrders(ctx context.Context, pool nextStepMarketplaceQuerier, args pgx.NamedArgs) ([]NextStepMarketplaceOrder, error) {
@@ -405,6 +445,23 @@ func nextStepStatusCounts(summary NextStepMarketplaceSummary) map[string]int {
 		"success": summary.SuccessCount,
 		"cancel":  summary.CancelCount,
 	}
+}
+
+func fillNextStepTrend(dateFrom, dateTo string, amountByDate map[string]float64) []NextStepMarketplaceTrendPoint {
+	from, fromErr := time.Parse("2006-01-02", dateFrom)
+	to, toErr := time.Parse("2006-01-02", dateTo)
+	if fromErr != nil || toErr != nil || to.Before(from) {
+		return []NextStepMarketplaceTrendPoint{}
+	}
+	points := make([]NextStepMarketplaceTrendPoint, 0, int(to.Sub(from).Hours()/24)+1)
+	for day := from; !day.After(to); day = day.AddDate(0, 0, 1) {
+		date := day.Format("2006-01-02")
+		points = append(points, NextStepMarketplaceTrendPoint{
+			Date:        date,
+			TotalAmount: amountByDate[date],
+		})
+	}
+	return points
 }
 
 const nextStepMarketplaceCTE = `

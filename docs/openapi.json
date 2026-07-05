@@ -700,6 +700,12 @@
                   "$ref": "#/components/schemas/NextStepMarketplaceOrder"
                 }
               },
+              "trend": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/NextStepMarketplaceTrendPoint"
+                }
+              },
               "meta": {
                 "$ref": "#/components/schemas/NextStepMarketplaceMeta"
               }
@@ -773,6 +779,20 @@
               "success",
               "cancel"
             ]
+          }
+        }
+      },
+      "NextStepMarketplaceTrendPoint": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-07-03"
+          },
+          "total_amount": {
+            "type": "number",
+            "example": 1200
           }
         }
       },
