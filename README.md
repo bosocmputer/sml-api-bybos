@@ -250,7 +250,7 @@ http://localhost:8200/openapi.json
 | `GET` | `/api/v1/ic/doc-formats` | รูปแบบเอกสารทั้งหมดจาก `erp_doc_format`; ส่ง `screen_code` ได้ถ้าต้องการ filter |
 | `GET` | `/api/v1/ic/doc-formats/by-code?doc_format_code=PO` | ค้นหารูปแบบเอกสารด้วย `erp_doc_format.code` และคืน `screen_code` ของรายการนั้น |
 | `GET` | `/api/v1/ic/doc-no/next` | ดูเลขเอกสารถัดไปจาก SML สำหรับ `saleorder`, `saleinvoice`, `purchaseorder`, `receipt` |
-| `GET` | `/api/v1/ic/document-candidates?doc_format_code=` | ค้นหาเอกสาร (`ic_trans`/`ap_ar_trans`) ตาม `doc_format_code`, filter เพิ่มด้วย `search` (prefix ของ `doc_no`) |
+| `GET` | `/api/v1/ic/document-candidates?doc_format_code=` | ค้นหาเอกสารจาก `ic_trans UNION ALL ap_ar_trans` ตาม `doc_format_code`; `search` เป็น contains literal บน `doc_no`, `cust_code`, `ar_customer.name_1`, `ap_supplier.name_1` |
 | `GET` | `/api/v1/ic/document-candidates/:doc_no?doc_format_code=` | เอกสารเดี่ยวจากตารางเดียวกับ document-candidates |
 
 ### PaperLess Document Finalization
@@ -264,6 +264,8 @@ http://localhost:8200/openapi.json
 `/documents/:doc_no/images` ต้องส่ง `images[]` ที่มี `pageNo`, `contentType=image/jpeg`, `sha256`, และ `data` base64 (สูงสุด 8 pages, 4MB ต่อ page). Endpoint นี้ replace rows เดิมของ `doc_no` เพื่อให้ retry ไม่สร้างรูปซ้ำ.
 
 `/documents/:doc_no/lock` ตั้ง `is_lock_record=1` บน `ic_trans` หรือ `ap_ar_trans` (ค้นหาให้อัตโนมัติ); idempotent — lock ซ้ำคืน `already_locked=true` โดยไม่เขียนซ้ำ.
+
+For large customer tenants, document-candidate search may need DBA-approved indexes such as trigram indexes on `doc_no`, `cust_code`, and party names. The API does not create customer ERP indexes automatically.
 
 ### Accounts Receivable / Customers (`ar`)
 

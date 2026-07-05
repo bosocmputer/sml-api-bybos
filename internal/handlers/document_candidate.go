@@ -36,19 +36,22 @@ type DocumentCandidate struct {
 	IsLockRecord  int     `json:"is_lock_record"`
 }
 
+type documentCandidateRow struct {
+	DocumentCandidate
+	actualTable string
+	transType   int
+	arName      string
+	apName      string
+}
+
 func (h *DocumentCandidateHandler) List(c *gin.Context) {
 	docFormatCode := strings.ToUpper(strings.TrimSpace(c.Query("doc_format_code")))
 	if docFormatCode == "" {
 		api.BadRequest(c, "doc_format_code_required", "doc_format_code is required", nil)
 		return
 	}
-	search := strings.TrimSpace(c.Query("search"))
+	search := truncateCandidateSearch(strings.TrimSpace(c.Query("search")))
 	page, size := pageParams(c)
-	table, partyType := candidateSource(docFormatCode)
-	if table == "" {
-		api.BadRequest(c, "unsupported_doc_format_code", "doc_format_code is not supported for document search", gin.H{"doc_format_code": docFormatCode})
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
@@ -59,22 +62,27 @@ func (h *DocumentCandidateHandler) List(c *gin.Context) {
 		return
 	}
 
-	where := "WHERE COALESCE(t.last_status,0)=0 AND upper(COALESCE(t.doc_format_code,'')) = @doc_format_code"
+	where := "WHERE upper(COALESCE(doc_format_code,'')) = @doc_format_code"
 	args := pgx.NamedArgs{"doc_format_code": docFormatCode}
 	if search != "" {
-		where += " AND t.doc_no ILIKE @search"
-		args["search"] = search + "%"
+		where += ` AND (
+    doc_no ILIKE @search ESCAPE '\'
+    OR party_code ILIKE @search ESCAPE '\'
+    OR ar_name ILIKE @search ESCAPE '\'
+    OR ap_name ILIKE @search ESCAPE '\'
+)`
+		args["search"] = "%" + escapeSQLLike(search) + "%"
 	}
 
 	var total int
-	if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM "+table+" t "+where, args).Scan(&total); err != nil {
+	if err := pool.QueryRow(ctx, candidateCountQuery(where), args).Scan(&total); err != nil {
 		api.Internal(c, "document_candidates_count_failed", "could not count documents", err.Error())
 		return
 	}
 
 	args["limit"] = size
 	args["offset"] = (page - 1) * size
-	rows, err := pool.Query(ctx, candidateQuery(table, partyType, where), args)
+	rows, err := pool.Query(ctx, candidateListQuery(where), args)
 	if err != nil {
 		api.Internal(c, "document_candidates_failed", "could not search documents", err.Error())
 		return
@@ -116,11 +124,6 @@ func (h *DocumentCandidateHandler) Get(c *gin.Context) {
 		api.BadRequest(c, "doc_format_code_required", "doc_format_code is required", nil)
 		return
 	}
-	table, partyType := candidateSource(docFormatCode)
-	if table == "" {
-		api.BadRequest(c, "unsupported_doc_format_code", "doc_format_code is not supported for document search", gin.H{"doc_format_code": docFormatCode})
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
@@ -131,9 +134,9 @@ func (h *DocumentCandidateHandler) Get(c *gin.Context) {
 		return
 	}
 
-	where := "WHERE COALESCE(t.last_status,0)=0 AND upper(COALESCE(t.doc_format_code,'')) = @doc_format_code AND t.doc_no = @doc_no"
+	where := "WHERE upper(COALESCE(doc_format_code,'')) = @doc_format_code AND doc_no = @doc_no"
 	args := pgx.NamedArgs{"doc_format_code": docFormatCode, "doc_no": docNo, "limit": 1, "offset": 0}
-	item, err := scanDocumentCandidate(pool.QueryRow(ctx, candidateQuery(table, partyType, where), args))
+	item, err := scanDocumentCandidate(pool.QueryRow(ctx, candidateListQuery(where), args))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			api.NotFound(c, "document_not_found", "document was not found")
@@ -160,63 +163,152 @@ func pageParams(c *gin.Context) (int, int) {
 	return page, size
 }
 
-func candidateSource(docFormatCode string) (table, partyType string) {
-	switch strings.ToUpper(strings.TrimSpace(docFormatCode)) {
-	case "PO", "PA", "PUP":
-		return "ic_trans", "AP"
-	case "PB", "PV", "PBV", "PVV":
-		return "ap_ar_trans", "AP"
-	case "SO", "SI", "SR", "INV":
-		return "ic_trans", "AR"
-	default:
-		if strings.HasPrefix(docFormatCode, "P") {
-			return "ic_trans", "AP"
-		}
-		return "ic_trans", "AR"
-	}
+func candidateCountQuery(where string) string {
+	return candidateCTE() + `
+SELECT COUNT(*)
+FROM candidates
+` + where
 }
 
-func candidateQuery(table, partyType, where string) string {
-	partyJoin := "LEFT JOIN ar_customer p ON p.code = t.cust_code"
-	if partyType == "AP" {
-		partyJoin = "LEFT JOIN ap_supplier p ON p.code = t.cust_code"
-	}
-	totalField := "COALESCE(t.total_amount,0)"
-	if table == "ap_ar_trans" {
-		totalField = "COALESCE(t.total_after_vat, t.total_net_value, t.amount, 0)"
-	}
-	return `SELECT t.doc_no,
-       t.doc_date,
-       COALESCE(t.doc_format_code,''),
-       t.trans_flag,
-       COALESCE(t.cust_code,''),
-       COALESCE(p.name_1,''),
-       ` + totalField + `,
-       COALESCE(t.is_lock_record,0)
-FROM ` + table + ` t
-` + partyJoin + `
+func candidateListQuery(where string) string {
+	return candidateCTE() + `
+SELECT doc_no, doc_date, doc_format_code, trans_flag, table_name, trans_type,
+       party_code, ar_name, ap_name, total_amount, is_lock_record
+FROM candidates
 ` + where + `
-ORDER BY t.doc_date DESC, t.doc_no DESC
+ORDER BY doc_date DESC, doc_no DESC
 LIMIT @limit OFFSET @offset`
 }
 
+func candidateCTE() string {
+	return `WITH candidates AS (
+    SELECT t.doc_no,
+           t.doc_date,
+           COALESCE(t.doc_format_code,'') AS doc_format_code,
+           COALESCE(t.trans_flag,0) AS trans_flag,
+           'ic_trans' AS table_name,
+           COALESCE(t.trans_type,0) AS trans_type,
+           COALESCE(t.cust_code,'') AS party_code,
+           COALESCE(ar.name_1,'') AS ar_name,
+           COALESCE(ap.name_1,'') AS ap_name,
+           COALESCE(t.total_amount, 0)::double precision AS total_amount,
+           COALESCE(t.is_lock_record,0) AS is_lock_record
+      FROM ic_trans t
+      LEFT JOIN ar_customer ar ON ar.code = t.cust_code
+      LEFT JOIN ap_supplier ap ON ap.code = t.cust_code
+     WHERE COALESCE(t.last_status,0)=0
+    UNION ALL
+    SELECT t.doc_no,
+           t.doc_date,
+           COALESCE(t.doc_format_code,'') AS doc_format_code,
+           COALESCE(t.trans_flag,0) AS trans_flag,
+           'ap_ar_trans' AS table_name,
+           COALESCE(t.trans_type,0) AS trans_type,
+           COALESCE(t.cust_code,'') AS party_code,
+           COALESCE(ar.name_1,'') AS ar_name,
+           COALESCE(ap.name_1,'') AS ap_name,
+           COALESCE(
+               NULLIF(t.total_after_vat, 0),
+               NULLIF(t.amount, 0),
+               NULLIF((
+                   SELECT SUM(COALESCE(d.sum_debt_amount, 0))
+                     FROM ap_ar_trans_detail d
+                    WHERE d.doc_no = t.doc_no
+                      AND COALESCE(d.last_status,0)=0
+               ), 0),
+               NULLIF((
+                   SELECT SUM(COALESCE(d.sum_pay_money, 0))
+                     FROM ap_ar_trans_detail d
+                    WHERE d.doc_no = t.doc_no
+                      AND COALESCE(d.last_status,0)=0
+               ), 0),
+               0
+           )::double precision AS total_amount,
+           COALESCE(t.is_lock_record,0) AS is_lock_record
+      FROM ap_ar_trans t
+      LEFT JOIN ar_customer ar ON ar.code = t.cust_code
+      LEFT JOIN ap_supplier ap ON ap.code = t.cust_code
+     WHERE COALESCE(t.last_status,0)=0
+)`
+}
+
+func truncateCandidateSearch(value string) string {
+	value = strings.TrimSpace(value)
+	if len([]rune(value)) <= 120 {
+		return value
+	}
+	return string([]rune(value)[:120])
+}
+
+func resolveCandidateSource(docFormatCode string, transFlag, transType int, actualTable string) (table, partyType string) {
+	table = strings.TrimSpace(actualTable)
+	partyType = partyTypeFromTransType(transType)
+	if entry, ok := transFlagCatalog[transFlag]; ok {
+		if strings.TrimSpace(entry.Table) != "" {
+			table = entry.Table
+		}
+		if resolved := partyTypeFromTransType(entry.Type); resolved != "" {
+			partyType = resolved
+		}
+	}
+	if table == "" {
+		table = "ic_trans"
+	}
+	if partyType == "" {
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(docFormatCode)), "P") {
+			partyType = "AP"
+		} else {
+			partyType = "AR"
+		}
+	}
+	return table, partyType
+}
+
+func partyTypeFromTransType(transType int) string {
+	switch transType {
+	case 1, 4:
+		return "AP"
+	case 2, 5:
+		return "AR"
+	default:
+		return ""
+	}
+}
+
+func candidatePartyName(partyType, arName, apName string) string {
+	if partyType == "AP" {
+		if strings.TrimSpace(apName) != "" {
+			return apName
+		}
+		return arName
+	}
+	if strings.TrimSpace(arName) != "" {
+		return arName
+	}
+	return apName
+}
+
 func scanDocumentCandidate(row interface{ Scan(dest ...any) error }) (DocumentCandidate, error) {
-	var item DocumentCandidate
+	var item documentCandidateRow
 	var docDate time.Time
 	err := row.Scan(
 		&item.DocNo,
 		&docDate,
 		&item.DocFormatCode,
 		&item.TransFlag,
+		&item.actualTable,
+		&item.transType,
 		&item.PartyCode,
-		&item.PartyName,
+		&item.arName,
+		&item.apName,
 		&item.TotalAmount,
 		&item.IsLockRecord,
 	)
 	if err != nil {
-		return item, err
+		return item.DocumentCandidate, err
 	}
 	item.DocDate = docDate.Format("2006-01-02")
-	item.Table, item.PartyType = candidateSource(item.DocFormatCode)
-	return item, nil
+	item.Table, item.PartyType = resolveCandidateSource(item.DocFormatCode, item.TransFlag, item.transType, item.actualTable)
+	item.PartyName = candidatePartyName(item.PartyType, item.arName, item.apName)
+	return item.DocumentCandidate, nil
 }

@@ -1610,6 +1610,661 @@
             }
           }
         }
+      },
+      "SMLLoginRequest": {
+        "type": "object",
+        "required": [
+          "provider",
+          "dataGroup",
+          "username",
+          "password"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "example": "smlgoh",
+            "description": "Must match SML_AUTH_PROVIDER"
+          },
+          "dataGroup": {
+            "type": "string",
+            "example": "sml",
+            "description": "Must match SML_AUTH_DATAGROUP"
+          },
+          "username": {
+            "type": "string",
+            "example": "admin"
+          },
+          "password": {
+            "type": "string",
+            "format": "password"
+          },
+          "databaseName": {
+            "type": "string",
+            "example": "SML1_2026",
+            "description": "Optional. If provided, the response's selectedDatabase is resolved and readiness-checked immediately."
+          }
+        }
+      },
+      "SMLLoginResult": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "dataGroup": {
+            "type": "string"
+          },
+          "user": {
+            "type": "object",
+            "properties": {
+              "userCode": {
+                "type": "string"
+              },
+              "userName": {
+                "type": "string"
+              },
+              "userLevel": {
+                "type": "integer"
+              },
+              "activeStatus": {
+                "type": "integer"
+              }
+            }
+          },
+          "databases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SMLLoginDatabase"
+            }
+          },
+          "selectedDatabase": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SMLLoginDatabase"
+              }
+            ],
+            "nullable": true
+          }
+        }
+      },
+      "SMLLoginDatabase": {
+        "type": "object",
+        "properties": {
+          "dataGroup": {
+            "type": "string"
+          },
+          "dataCode": {
+            "type": "string"
+          },
+          "dataName": {
+            "type": "string"
+          },
+          "databaseName": {
+            "type": "string"
+          },
+          "tenant": {
+            "type": "string",
+            "example": "sml1_2026"
+          },
+          "readiness": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "ok": {
+                "type": "boolean"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "main_db_missing",
+                  "image_db_missing",
+                  "unknown"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "tenant": {
+                "type": "string"
+              },
+              "imageDatabase": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "TenantReadiness": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "main_db_missing",
+              "image_db_missing",
+              "schema_mismatch"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "imageDatabase": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "TenantImageDatabaseRequest": {
+        "type": "object",
+        "required": [
+          "tenant"
+        ],
+        "properties": {
+          "tenant": {
+            "type": "string",
+            "example": "stpt"
+          },
+          "template": {
+            "type": "string",
+            "example": "iampcoffee_images",
+            "description": "Defaults to SML_IMAGE_TEMPLATE_DATABASE"
+          }
+        }
+      },
+      "TenantImageDatabaseResult": {
+        "type": "object",
+        "properties": {
+          "provisioned": {
+            "type": "boolean"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/TenantReadiness"
+          }
+        }
+      },
+      "SaleInvoiceCancelRequest": {
+        "type": "object",
+        "description": "doc_no is the new credit-note document number (required on the create call; ignored on preview).",
+        "properties": {
+          "doc_no": {
+            "type": "string",
+            "example": "BF-CN2605000001"
+          },
+          "doc_date": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-05-27"
+          },
+          "doc_time": {
+            "type": "string",
+            "example": "14:30"
+          },
+          "doc_format_code": {
+            "type": "string",
+            "example": "CN",
+            "description": "Defaults to CN"
+          },
+          "remark": {
+            "type": "string"
+          },
+          "user_request": {
+            "type": "string"
+          }
+        }
+      },
+      "SaleInvoiceCancelPreview": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "already_exists",
+              "created"
+            ]
+          },
+          "sale_doc_no": {
+            "type": "string"
+          },
+          "cancel_doc_no": {
+            "type": "string"
+          },
+          "existing_cancel_doc_no": {
+            "type": "string"
+          },
+          "trans_flag": {
+            "type": "integer"
+          },
+          "doc_format_code": {
+            "type": "string"
+          },
+          "doc_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "cust_code": {
+            "type": "string"
+          },
+          "total_amount": {
+            "type": "number"
+          },
+          "total_value": {
+            "type": "number"
+          },
+          "total_vat_value": {
+            "type": "number"
+          },
+          "total_after_vat": {
+            "type": "number"
+          },
+          "item_count": {
+            "type": "integer"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "line_number": {
+                  "type": "integer"
+                },
+                "item_code": {
+                  "type": "string"
+                },
+                "item_name": {
+                  "type": "string"
+                },
+                "unit_code": {
+                  "type": "string"
+                },
+                "qty": {
+                  "type": "number"
+                },
+                "price": {
+                  "type": "number"
+                },
+                "sum_amount": {
+                  "type": "number"
+                },
+                "ref_doc_no": {
+                  "type": "string"
+                },
+                "ref_line_number": {
+                  "type": "integer"
+                },
+                "doc_ref_type": {
+                  "type": "integer"
+                },
+                "price_exclude_vat": {
+                  "type": "number"
+                },
+                "sum_amount_exclude_vat": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "UpdatePurchaseOrderDocRefRequest": {
+        "type": "object",
+        "required": [
+          "doc_ref"
+        ],
+        "properties": {
+          "doc_ref": {
+            "type": "string"
+          },
+          "expected_old_doc_ref": {
+            "type": "string",
+            "description": "Optimistic-lock check; 409 if it doesn't match the current value"
+          },
+          "expected_remark_5": {
+            "type": "string",
+            "description": "Optimistic-lock check; 409 if it doesn't match the current value"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "When true, validates and returns the result without writing"
+          }
+        }
+      },
+      "UpdatePurchaseOrderDocRefResult": {
+        "type": "object",
+        "properties": {
+          "doc_no": {
+            "type": "string"
+          },
+          "old_doc_ref": {
+            "type": "string"
+          },
+          "new_doc_ref": {
+            "type": "string"
+          },
+          "old_remark_5": {
+            "type": "string"
+          },
+          "updated_detail_rows": {
+            "type": "integer"
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "log_status": {
+            "type": "string"
+          },
+          "log_warning": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "DocumentCandidate": {
+        "type": "object",
+        "properties": {
+          "doc_no": {
+            "type": "string"
+          },
+          "doc_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "doc_format_code": {
+            "type": "string"
+          },
+          "trans_flag": {
+            "type": "integer"
+          },
+          "table": {
+            "type": "string",
+            "enum": [
+              "ic_trans",
+              "ap_ar_trans"
+            ]
+          },
+          "party_code": {
+            "type": "string"
+          },
+          "party_name": {
+            "type": "string"
+          },
+          "party_type": {
+            "type": "string",
+            "enum": [
+              "AR",
+              "AP"
+            ]
+          },
+          "total_amount": {
+            "type": "number"
+          },
+          "is_lock_record": {
+            "type": "integer"
+          }
+        }
+      },
+      "DocumentImageReplaceRequest": {
+        "type": "object",
+        "required": [
+          "images"
+        ],
+        "properties": {
+          "images": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "required": [
+                "pageNo",
+                "sha256",
+                "data"
+              ],
+              "properties": {
+                "pageNo": {
+                  "type": "integer",
+                  "example": 1
+                },
+                "contentType": {
+                  "type": "string",
+                  "example": "image/jpeg"
+                },
+                "sha256": {
+                  "type": "string"
+                },
+                "data": {
+                  "type": "string",
+                  "format": "byte",
+                  "description": "Base64-encoded JPEG bytes, max 4MB per page"
+                }
+              }
+            }
+          },
+          "totalPages": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "DocumentImageReplaceResult": {
+        "type": "object",
+        "properties": {
+          "doc_no": {
+            "type": "string"
+          },
+          "image_count": {
+            "type": "integer"
+          },
+          "total_pages": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "total_bytes": {
+            "type": "integer"
+          },
+          "target_tables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "page_no": {
+                  "type": "integer"
+                },
+                "guid_code": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "DocumentLockResult": {
+        "type": "object",
+        "properties": {
+          "doc_no": {
+            "type": "string"
+          },
+          "table": {
+            "type": "string",
+            "enum": [
+              "ic_trans",
+              "ap_ar_trans"
+            ]
+          },
+          "trans_flag": {
+            "type": "integer"
+          },
+          "is_lock_record": {
+            "type": "integer"
+          },
+          "already_locked": {
+            "type": "boolean"
+          }
+        }
+      },
+      "RelatedDocumentGraph": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "$ref": "#/components/schemas/RelatedDocumentNode"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RelatedDocumentNode"
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from_doc_no": {
+                  "type": "string"
+                },
+                "to_doc_no": {
+                  "type": "string"
+                },
+                "relation": {
+                  "type": "string"
+                },
+                "source_table": {
+                  "type": "string"
+                },
+                "source_column": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "depth": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the graph hit relatedMaxNodes (30)"
+          }
+        }
+      },
+      "RelatedDocumentNode": {
+        "type": "object",
+        "properties": {
+          "doc_no": {
+            "type": "string"
+          },
+          "doc_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "doc_time": {
+            "type": "string"
+          },
+          "doc_format_code": {
+            "type": "string"
+          },
+          "doc_format_name": {
+            "type": "string"
+          },
+          "trans_flag": {
+            "type": "integer"
+          },
+          "trans_flag_menu": {
+            "type": "string"
+          },
+          "trans_flag_name_th": {
+            "type": "string"
+          },
+          "trans_flag_name_en": {
+            "type": "string"
+          },
+          "trans_type": {
+            "type": "integer"
+          },
+          "table": {
+            "type": "string",
+            "enum": [
+              "ic_trans",
+              "ap_ar_trans"
+            ]
+          },
+          "party_code": {
+            "type": "string"
+          },
+          "party_name": {
+            "type": "string"
+          },
+          "party_type": {
+            "type": "string"
+          },
+          "total_amount": {
+            "type": "number"
+          },
+          "source_doc_no": {
+            "type": "string"
+          },
+          "is_lock_record": {
+            "type": "integer"
+          }
+        }
       }
     }
   },
@@ -3688,52 +4343,6 @@
             }
           }
         }
-      },
-      "post": {
-        "tags": [
-          "Customers"
-        ],
-        "summary": "Create AR customer",
-        "description": "Creates ar_customer and ar_customer_detail in one transaction. Backward compatible with {code, name_1}.",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CustomerCreateRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "customer created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/SuccessResponse"
-                    },
-                    {
-                      "properties": {
-                        "data": {
-                          "$ref": "#/components/schemas/Customer"
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "validation failed"
-          },
-          "409": {
-            "description": "duplicate customer code"
-          }
-        }
       }
     },
     "/health/ready": {
@@ -3779,6 +4388,1094 @@
         "responses": {
           "200": {
             "description": "OpenAPI JSON"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/sml/login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "SML login and list allowed databases",
+        "description": "Validates username/password against SML_AUTH_MAIN_DATABASE (public.sml_user_list) and returns every database the user is permitted to use, each annotated with tenant image-DB readiness. Does not require or use the X-Tenant/databaseName header.",
+        "security": [
+          {
+            "ApiKeyHeader": []
+          },
+          {
+            "GuidHeader": []
+          },
+          {
+            "ApiKeyQuery": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SMLLoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "login succeeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/SMLLoginResult"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tenants/readiness": {
+      "get": {
+        "tags": [
+          "Tenants"
+        ],
+        "summary": "Check tenant + image-database readiness",
+        "description": "Verifies that `${tenant}` and `${tenant}_images` both exist and that public.sml_doc_images matches the configured template schema. Used by PaperLess before allowing document finalization for a tenant.",
+        "security": [
+          {
+            "ApiKeyHeader": []
+          },
+          {
+            "GuidHeader": []
+          },
+          {
+            "ApiKeyQuery": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "stpt"
+          },
+          {
+            "name": "template",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Defaults to SML_IMAGE_TEMPLATE_DATABASE"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "readiness report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/TenantReadiness"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tenants/image-database": {
+      "post": {
+        "tags": [
+          "Tenants"
+        ],
+        "summary": "Provision the tenant image database if missing",
+        "description": "Guarded auto-provision: creates `${tenant}_images` and/or the sml_doc_images schema only when the main tenant DB already exists and the failure is limited to the image database/schema. Refuses when the main DB is missing or when a check fails for any other reason. Idempotent — re-verifies after a concurrent create.",
+        "security": [
+          {
+            "ApiKeyHeader": []
+          },
+          {
+            "GuidHeader": []
+          },
+          {
+            "ApiKeyQuery": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantImageDatabaseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "already ready or provisioned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/TenantImageDatabaseResult"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "424": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/sale-invoices/{doc_no}/cancel/preview": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Preview a sale-invoice cancellation (credit note)",
+        "description": "Read-only: shows the credit note that would be created for this sale invoice without writing anything. doc_no in the path is the existing sale invoice; the request body's doc_no (if any) is ignored on preview.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "BF-INV26050001"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaleInvoiceCancelRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "preview (status=ready or already_exists)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/SaleInvoiceCancelPreview"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/sale-invoices/{doc_no}/cancel": {
+      "post": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Create a credit note cancelling a sale invoice",
+        "description": "Writes a credit note (ic_trans/ic_trans_detail, trans_flag=credit note) referencing the sale invoice and marks the source invoice used_status=1. Idempotent: if a credit note already exists for this sale invoice, returns 200 with status=already_exists instead of creating a duplicate.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "BF-INV26050001"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaleInvoiceCancelRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "credit note created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/SaleInvoiceCancelPreview"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "already_exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/SaleInvoiceCancelPreview"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/purchase-orders/{doc_no}/doc-ref": {
+      "patch": {
+        "tags": [
+          "Documents"
+        ],
+        "summary": "Update a purchase order's doc_ref",
+        "description": "Updates ic_trans.doc_ref and ic_trans_detail.doc_ref for an active (last_status=0) purchase order. Supports dry_run (validate without writing) and optimistic-lock checks via expected_old_doc_ref/expected_remark_5 (409 on mismatch).",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "BF-PO2605000001"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePurchaseOrderDocRefRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/UpdatePurchaseOrderDocRefResult"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/document-candidates": {
+      "get": {
+        "tags": [
+          "Document Lifecycle"
+        ],
+        "summary": "Search documents by doc_format_code for PaperLess linking",
+        "description": "Looks up rows in ic_trans (PO/SO/SI/...) or ap_ar_trans (PB/PV/...) depending on doc_format_code, so PaperLess can find a document to attach an uploaded file to.",
+        "parameters": [
+          {
+            "name": "doc_format_code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "PO"
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Prefix match on doc_no"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "document candidates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DocumentCandidate"
+                      }
+                    },
+                    "page": {
+                      "type": "integer"
+                    },
+                    "size": {
+                      "type": "integer"
+                    },
+                    "total": {
+                      "type": "integer"
+                    },
+                    "hasMore": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/document-candidates/{doc_no}": {
+      "get": {
+        "tags": [
+          "Document Lifecycle"
+        ],
+        "summary": "Get a single document candidate",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "doc_format_code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "PO"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "document found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/DocumentCandidate"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/erp/sml-user-list": {
+      "get": {
+        "tags": [
+          "ERP Master"
+        ],
+        "summary": "List SML users (fixed database)",
+        "description": "Always queries the smlerpmaindata.sml_user_list table regardless of the X-Tenant header — this is the SML platform's shared user registry, not a per-tenant table.",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SML user list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/PagedResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/ERPMasterItem"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{doc_no}/images": {
+      "post": {
+        "tags": [
+          "Document Lifecycle"
+        ],
+        "summary": "Replace document image snapshot pages",
+        "description": "Replaces all rows for this doc_no in public.sml_doc_images in both the tenant DB and `${tenant}_images`, so PaperLess retries never create duplicate pages. Max 8 JPEG pages, 4MB each, 24MB request total.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentImageReplaceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "images replaced",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/DocumentImageReplaceResult"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{doc_no}/lock": {
+      "post": {
+        "tags": [
+          "Document Lifecycle"
+        ],
+        "summary": "Lock a document after PaperLess finalization",
+        "description": "Sets is_lock_record=1 on whichever of ic_trans/ap_ar_trans holds this doc_no (active row, last_status=0). Idempotent — locking an already-locked document returns already_locked=true without writing. Locks only the given doc_no, never a related chain.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "locked (or already locked)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/DocumentLockResult"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/documents/{doc_no}/related": {
+      "get": {
+        "tags": [
+          "Document Lifecycle"
+        ],
+        "summary": "Get the related-document reference graph",
+        "description": "Walks ref_doc_no/doc_ref links from the given document (e.g. PO -> receipt, SO -> SI -> CN) up to `depth` hops, for PaperLess to show the document chain.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "doc_format_code",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Disambiguates doc_no when the same number exists under different formats"
+          },
+          {
+            "name": "depth",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 3,
+              "maximum": 4,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "related-document graph (max 30 nodes)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/RelatedDocumentGraph"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -3836,6 +5533,18 @@
     {
       "name": "Marketplace",
       "description": "Read-only marketplace order views for dashboards"
+    },
+    {
+      "name": "Auth",
+      "description": "SML login and per-user database permissions"
+    },
+    {
+      "name": "Tenants",
+      "description": "PaperLess tenant/image-database readiness and provisioning"
+    },
+    {
+      "name": "Document Lifecycle",
+      "description": "PaperLess finalization: image snapshots, locking, related-document graph, and document search"
     }
   ]
 }
