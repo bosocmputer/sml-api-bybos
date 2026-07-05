@@ -12,7 +12,7 @@ RUN addgroup -S app && adduser -S app -G app
 WORKDIR /app
 COPY --from=builder /app/sml-api-bybos .
 USER app
-EXPOSE 8201
+EXPOSE 8200
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:8201/health || exit 1
+  CMD wget -qO- http://localhost:8200/health || exit 1
 CMD ["./sml-api-bybos"]
