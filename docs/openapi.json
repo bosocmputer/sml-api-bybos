@@ -677,6 +677,130 @@
           }
         }
       },
+      "NextStepMarketplaceOrdersResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "summary": {
+                "$ref": "#/components/schemas/NextStepMarketplaceSummary"
+              },
+              "orders": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/NextStepMarketplaceOrder"
+                }
+              },
+              "meta": {
+                "$ref": "#/components/schemas/NextStepMarketplaceMeta"
+              }
+            }
+          }
+        }
+      },
+      "NextStepMarketplaceSummary": {
+        "type": "object",
+        "properties": {
+          "total_orders": {
+            "type": "integer",
+            "example": 12
+          },
+          "total_amount": {
+            "type": "number",
+            "example": 15200
+          },
+          "cn_total_amount": {
+            "type": "number",
+            "example": 300
+          },
+          "status_counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "example": {
+              "pending": 2,
+              "packing": 3,
+              "payment": 1,
+              "success": 5,
+              "cancel": 1
+            }
+          }
+        }
+      },
+      "NextStepMarketplaceOrder": {
+        "type": "object",
+        "properties": {
+          "doc_no": {
+            "type": "string",
+            "example": "MQT26070001"
+          },
+          "doc_date": {
+            "type": "string",
+            "example": "2026-07-03"
+          },
+          "inv_doc_no": {
+            "type": "string",
+            "example": "IV26070001"
+          },
+          "total_amount": {
+            "type": "number",
+            "example": 1200
+          },
+          "cn_total_amount": {
+            "type": "number",
+            "example": 100
+          },
+          "balance": {
+            "type": "number",
+            "example": 0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "packing",
+              "payment",
+              "success",
+              "cancel"
+            ]
+          }
+        }
+      },
+      "NextStepMarketplaceMeta": {
+        "type": "object",
+        "properties": {
+          "tenant": {
+            "type": "string",
+            "example": "aoy"
+          },
+          "cust_code": {
+            "type": "string",
+            "example": "C001"
+          },
+          "doc_prefix": {
+            "type": "string",
+            "example": "MQT"
+          },
+          "date_basis": {
+            "type": "string",
+            "example": "ic_qt.doc_date"
+          },
+          "source": {
+            "type": "string",
+            "example": "sml.ic_trans"
+          }
+        }
+      },
       "PagedResponse": {
         "type": "object",
         "required": [
@@ -3419,6 +3543,94 @@
         }
       }
     },
+    "/api/v1/marketplace/nextstep/orders": {
+      "get": {
+        "tags": [
+          "Marketplace"
+        ],
+        "summary": "List NextStep marketplace MQT orders from SML",
+        "description": "Read-only dashboard endpoint. Uses ic_qt.doc_date, cust_code, and MQT document prefix, then derives lifecycle status from related SML documents.",
+        "parameters": [
+          {
+            "name": "cust_code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 5,
+              "minimum": 1,
+              "maximum": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "NextStep marketplace orders",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NextStepMarketplaceOrdersResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid filters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "SML query failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "tags": [
@@ -3588,6 +3800,10 @@
     {
       "name": "Receipts",
       "description": "AR receipt candidates and receipt document creation"
+    },
+    {
+      "name": "Marketplace",
+      "description": "Read-only marketplace order views for dashboards"
     }
   ]
 }

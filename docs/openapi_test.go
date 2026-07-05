@@ -36,6 +36,7 @@ func TestOpenAPISpecIsValidAndBillFlowNative(t *testing.T) {
 		"/api/v1/ic/products/{code}/images/{roworder}",
 		"/api/v1/ic/products/{code}/units",
 		"/api/v1/ic/warehouses",
+		"/api/v1/marketplace/nextstep/orders",
 		"/api/v1/ic/sale-orders",
 		"/api/v1/ic/sale-invoices",
 		"/api/v1/ic/purchase-orders",
@@ -63,7 +64,7 @@ func TestOpenAPISpecIsValidAndBillFlowNative(t *testing.T) {
 		t.Fatal("PagedResponse must use meta.page, not top-level page")
 	}
 
-	for _, schema := range []string{"DocFormat", "NextDocNo", "ERPMasterItem", "ReceiptCandidate", "ARReceiptRequest", "ARReceiptCreated"} {
+	for _, schema := range []string{"DocFormat", "NextDocNo", "NextStepMarketplaceOrdersResponse", "ERPMasterItem", "ReceiptCandidate", "ARReceiptRequest", "ARReceiptCreated"} {
 		if _, ok := schemas[schema]; !ok {
 			t.Fatalf("required schema missing from OpenAPI spec: %s", schema)
 		}

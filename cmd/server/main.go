@@ -92,6 +92,10 @@ func main() {
 	smh := handlers.NewSummaryHandler(dbm)
 	v1.GET("/ic/transactions/summary", smh.DailySummary)
 
+	// Marketplace read models
+	nmh := handlers.NewNextStepMarketplaceHandler(dbm)
+	v1.GET("/marketplace/nextstep/orders", nmh.Orders)
+
 	// Stock (warehouse breakdown from vw_stock_balance_by_sloc)
 	skh := handlers.NewStockHandler(dbm)
 	v1.GET("/ic/stock", skh.List)
