@@ -127,6 +127,18 @@ The runtime API also exposes a readiness endpoint for PaperLess login checks:
 curl -H "X-Api-Key: $API_KEY" "http://localhost:8201/api/v1/tenants/readiness?tenant=stpt"
 ```
 
+PaperLess can also trigger a guarded runtime provision when the main tenant DB exists but `${tenant}_images` or `public.sml_doc_images` is missing:
+
+```bash
+curl -X POST \
+  -H "X-Api-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant":"stpt"}' \
+  "http://localhost:8201/api/v1/tenants/image-database"
+```
+
+The endpoint creates only the missing `${tenant}_images` database and/or missing `public.sml_doc_images` table, then verifies it against the configured template. It refuses main DB missing and existing schema mismatch cases.
+
 If the main DB exists but the image DB is missing because the tenant was created directly in PostgreSQL, provision it explicitly. The command is dry-run by default:
 
 ```bash

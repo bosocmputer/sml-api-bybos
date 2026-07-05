@@ -329,6 +329,68 @@ func BuildProvisionPlan(ctx context.Context, cfg *config.Config, opts ProvisionO
 	return plan, nil
 }
 
+func EnsureDocImagesSchema(ctx context.Context, cfg *config.Config, databaseName, templateName string) (bool, error) {
+	databaseName = NormalizeTenant(databaseName)
+	templateName = NormalizeTenant(templateName)
+	if databaseName == "" {
+		return false, errors.New("database name is required")
+	}
+	if templateName == "" {
+		return false, errors.New("template image database is required")
+	}
+
+	templateConn, err := pgx.Connect(ctx, cfg.DSN(templateName))
+	if err != nil {
+		return false, fmt.Errorf("connect template database %s: %w", templateName, err)
+	}
+	defer templateConn.Close(ctx)
+	templateSchema, err := loadDocImagesSchema(ctx, templateConn)
+	if err != nil {
+		return false, err
+	}
+	if !templateSchema.hasTable() {
+		return false, fmt.Errorf("template %s does not contain public.%s", templateName, DocImagesTable)
+	}
+
+	targetConn, err := pgx.Connect(ctx, cfg.DSN(databaseName))
+	if err != nil {
+		return false, fmt.Errorf("connect database %s: %w", databaseName, err)
+	}
+	defer targetConn.Close(ctx)
+	targetSchema, err := loadDocImagesSchema(ctx, targetConn)
+	if err != nil {
+		return false, err
+	}
+	if targetSchema.hasTable() {
+		if !columnsEqual(targetSchema.Columns, templateSchema.Columns) ||
+			targetSchema.HasSequence != templateSchema.HasSequence ||
+			!constraintsEqual(targetSchema.Constraints, templateSchema.Constraints) ||
+			!indexesEqual(targetSchema.Indexes, templateSchema.Indexes) {
+			return false, fmt.Errorf("public.%s in %s does not match template %s", DocImagesTable, databaseName, templateName)
+		}
+		return false, nil
+	}
+
+	statements, err := buildDocImagesSchemaStatements(templateSchema)
+	if err != nil {
+		return false, err
+	}
+	tx, err := targetConn.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("start schema transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, stmt := range statements {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return false, fmt.Errorf("apply schema statement %q: %w", stmt, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit schema: %w", err)
+	}
+	return true, nil
+}
+
 func WithDefaultTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, 45*time.Second)
 }
@@ -533,9 +595,6 @@ func indexesEqual(a, b []indexSchema) bool {
 }
 
 func buildProvisionStatements(mainInfo DatabaseInfo, imageDatabase string, schema tableSchema) ([]string, error) {
-	if !schema.HasSequence {
-		return nil, fmt.Errorf("template schema has no %s sequence", DocImagesSequence)
-	}
 	statements := []string{
 		fmt.Sprintf(
 			"CREATE DATABASE %s WITH OWNER %s ENCODING %s LC_COLLATE %s LC_CTYPE %s TEMPLATE template0",
@@ -545,6 +604,20 @@ func buildProvisionStatements(mainInfo DatabaseInfo, imageDatabase string, schem
 			quoteLiteral(mainInfo.Collation),
 			quoteLiteral(mainInfo.CType),
 		),
+	}
+	schemaStatements, err := buildDocImagesSchemaStatements(schema)
+	if err != nil {
+		return nil, err
+	}
+	statements = append(statements, schemaStatements...)
+	return statements, nil
+}
+
+func buildDocImagesSchemaStatements(schema tableSchema) ([]string, error) {
+	if !schema.HasSequence {
+		return nil, fmt.Errorf("template schema has no %s sequence", DocImagesSequence)
+	}
+	statements := []string{
 		fmt.Sprintf("CREATE SEQUENCE public.%s", quoteIdent(DocImagesSequence)),
 	}
 
