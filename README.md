@@ -57,6 +57,10 @@ docker compose up -d
 | `SML_DB_MIN_CONNS` | `2` | Min connections per tenant pool |
 | `DEFAULT_TENANT` | *(empty)* | Tenant ที่ใช้ถ้าไม่ระบุ header |
 | `ALLOWED_TENANTS` | *(empty = allow all)* | Comma-separated tenant ที่อนุญาต เช่น `sml1_2026,aoy,data1_test` |
+| `SML_AUTH_MAIN_DATABASE` | `smlerpmainsmlgoh` | Database หลักสำหรับ `POST /api/v1/auth/sml/login` (ตรวจ user/password และสิทธิ์ database) |
+| `SML_AUTH_PROVIDER` | `smlgoh` | ค่า `provider` ที่ยอมรับใน login request |
+| `SML_AUTH_DATAGROUP` | `sml` | ค่า `dataGroup` ที่ยอมรับใน login request |
+| `SML_IMAGE_TEMPLATE_DATABASE` | `iampcoffee_images` | Template database default สำหรับ tenant readiness/provisioning ของ `${tenant}_images` |
 
 > A tenant can override the PostgreSQL connection without moving the other tenants:
 >
@@ -124,7 +128,7 @@ docker exec paperless-prod-sml-api ./verify-sml-tenant --tenant stpt --template 
 The runtime API also exposes a readiness endpoint for PaperLess login checks:
 
 ```bash
-curl -H "X-Api-Key: $API_KEY" "http://localhost:8201/api/v1/tenants/readiness?tenant=stpt"
+curl -H "X-Api-Key: $API_KEY" "http://localhost:8200/api/v1/tenants/readiness?tenant=stpt"
 ```
 
 PaperLess can also trigger a guarded runtime provision when the main tenant DB exists but `${tenant}_images` or `public.sml_doc_images` is missing:
@@ -134,7 +138,7 @@ curl -X POST \
   -H "X-Api-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"tenant":"stpt"}' \
-  "http://localhost:8201/api/v1/tenants/image-database"
+  "http://localhost:8200/api/v1/tenants/image-database"
 ```
 
 The endpoint creates only the missing `${tenant}_images` database and/or missing `public.sml_doc_images` table, then verifies it against the configured template. It refuses main DB missing and existing schema mismatch cases.
@@ -172,12 +176,25 @@ http://localhost:8200/openapi.json
 
 ## Endpoints
 
+### Auth
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/auth/sml/login` | ตรวจ user/password กับฐาน `SML_AUTH_MAIN_DATABASE` และคืนรายการ database ที่ user คนนั้นมีสิทธิ์ (ใช้ registry DB ไม่ผ่าน tenant header) |
+
 ### Health
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness check |
 | `GET` | `/health/ready` | Readiness check (ตรวจ DB connection) |
+
+### Tenants (PaperLess image DB)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/tenants/readiness?tenant=` | ตรวจว่า tenant DB และ `${tenant}_images` พร้อมใช้งาน (schema `public.sml_doc_images` ตรงกับ template) |
+| `POST` | `/api/v1/tenants/image-database` | สร้าง/ซ่อม `${tenant}_images` และ schema `sml_doc_images` แบบ guarded ถ้ายังไม่พร้อม |
 
 ### Inventory / Products (`ic`)
 
@@ -197,8 +214,11 @@ http://localhost:8200/openapi.json
 |---|---|---|
 | `POST` | `/api/v1/ic/sale-orders` | สร้างใบสั่งขาย (sale order) |
 | `POST` | `/api/v1/ic/sale-invoices` | สร้างใบกำกับภาษี (sale invoice) |
+| `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel/preview` | Preview ใบลดหนี้ (credit note) ที่จะสร้างจากใบกำกับภาษีเดิม โดยไม่เขียนข้อมูล |
+| `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel` | สร้างใบลดหนี้ยกเลิกใบกำกับภาษี (`trans_flag` credit note); idempotent ถ้ามีใบลดหนี้อยู่แล้วจะคืน `status=already_exists` |
 | `POST` | `/api/v1/ic/purchase-orders` | สร้างใบสั่งซื้อ (purchase order) |
 | `PATCH` | `/api/v1/ic/purchase-orders/:doc_no/creditor` | แก้เจ้าหนี้ของใบสั่งซื้อเดิม โดยอัปเดต `ic_trans.cust_code` และ `ic_trans_detail.cust_code` |
+| `PATCH` | `/api/v1/ic/purchase-orders/:doc_no/doc-ref` | แก้ `doc_ref` ของใบสั่งซื้อเดิม (header + detail); รองรับ `dry_run` และ optimistic-lock ผ่าน `expected_old_doc_ref`/`expected_remark_5` |
 
 ### Transactions
 
@@ -223,13 +243,15 @@ http://localhost:8200/openapi.json
 | `GET` | `/api/v1/ic/warehouses` | รายการคลังสินค้า |
 | `GET` | `/api/v1/ic/warehouses/:code` | คลังสินค้าตาม warehouse code (รวม shelves) |
 
-### Document Formats / Document Numbers
+### Document Formats / Document Numbers / Document Search
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/v1/ic/doc-formats` | รูปแบบเอกสารทั้งหมดจาก `erp_doc_format`; ส่ง `screen_code` ได้ถ้าต้องการ filter |
 | `GET` | `/api/v1/ic/doc-formats/by-code?doc_format_code=PO` | ค้นหารูปแบบเอกสารด้วย `erp_doc_format.code` และคืน `screen_code` ของรายการนั้น |
 | `GET` | `/api/v1/ic/doc-no/next` | ดูเลขเอกสารถัดไปจาก SML สำหรับ `saleorder`, `saleinvoice`, `purchaseorder`, `receipt` |
+| `GET` | `/api/v1/ic/document-candidates?doc_format_code=` | ค้นหาเอกสาร (`ic_trans`/`ap_ar_trans`) ตาม `doc_format_code`, filter เพิ่มด้วย `search` (prefix ของ `doc_no`) |
+| `GET` | `/api/v1/ic/document-candidates/:doc_no?doc_format_code=` | เอกสารเดี่ยวจากตารางเดียวกับ document-candidates |
 
 ### PaperLess Document Finalization
 
@@ -237,9 +259,11 @@ http://localhost:8200/openapi.json
 |---|---|---|
 | `POST` | `/api/v1/documents/:doc_no/images` | Replace รูป snapshot เอกสารใน `public.sml_doc_images` ทั้ง tenant DB และ `${tenant}_images` สูงสุด 8 JPEG pages |
 | `POST` | `/api/v1/documents/:doc_no/lock` | Lock เอกสาร SML หลัง PaperLess ส่งรูปและ final evidence สำเร็จ |
-| `GET` | `/api/v1/documents/:doc_no/related` | กราฟเอกสารอ้างอิงสำหรับ PaperLess |
+| `GET` | `/api/v1/documents/:doc_no/related?doc_format_code=&depth=` | กราฟเอกสารอ้างอิงสำหรับ PaperLess; `depth` default 3, สูงสุด 4, คืนสูงสุด 30 nodes |
 
-`/documents/:doc_no/images` ต้องส่ง `images[]` ที่มี `pageNo`, `contentType=image/jpeg`, `sha256`, และ `data` base64. Endpoint นี้ replace rows เดิมของ `image_id=doc_no` เพื่อให้ retry ไม่สร้างรูปซ้ำ.
+`/documents/:doc_no/images` ต้องส่ง `images[]` ที่มี `pageNo`, `contentType=image/jpeg`, `sha256`, และ `data` base64 (สูงสุด 8 pages, 4MB ต่อ page). Endpoint นี้ replace rows เดิมของ `doc_no` เพื่อให้ retry ไม่สร้างรูปซ้ำ.
+
+`/documents/:doc_no/lock` ตั้ง `is_lock_record=1` บน `ic_trans` หรือ `ap_ar_trans` (ค้นหาให้อัตโนมัติ); idempotent — lock ซ้ำคืน `already_locked=true` โดยไม่เขียนซ้ำ.
 
 ### Accounts Receivable / Customers (`ar`)
 
@@ -268,6 +292,7 @@ http://localhost:8200/openapi.json
 | `GET` | `/api/v1/erp/expenses` | ค่าใช้จ่ายจาก `erp_expenses_list` |
 | `GET` | `/api/v1/erp/incomes` | รายได้จาก `erp_income_list` |
 | `GET` | `/api/v1/erp/passbooks` | สมุดบัญชี/บัญชีรับเงินจาก `erp_pass_book` |
+| `GET` | `/api/v1/erp/sml-user-list` | ผู้ใช้ SML จากฐาน `smlerpmaindata.sml_user_list` (fixed database, ไม่ผ่าน tenant header) |
 
 ---
 
@@ -581,19 +606,26 @@ sml-api-bybos/
 │   ├── handlers/
 │   │   ├── health.go           ← /health + /health/ready
 │   │   ├── docs.go             ← /docs + /openapi.json
+│   │   ├── auth.go             ← POST /auth/sml/login
+│   │   ├── tenant_readiness.go ← GET /tenants/readiness, POST /tenants/image-database
 │   │   ├── product.go          ← products, units, product images
 │   │   ├── customer.go         ← AR customer list/get/create
 │   │   ├── supplier.go         ← AP supplier list/get/create
-│   │   ├── erp_master.go       ← branches/users/expenses/incomes/passbooks
+│   │   ├── erp_master.go       ← branches/users/expenses/incomes/passbooks/sml-user-list
 │   │   ├── doc_format.go       ← erp_doc_format list
 │   │   ├── doc_no.go           ← next doc number preview
+│   │   ├── document_candidate.go ← GET /ic/document-candidates(/:doc_no)
+│   │   ├── document_image.go   ← POST /documents/:doc_no/images
+│   │   ├── lock.go             ← POST /documents/:doc_no/lock
+│   │   ├── related_document.go ← GET /documents/:doc_no/related
 │   │   ├── ar_receipt.go       ← Shopee settlement receipt writer
 │   │   ├── transaction.go      ← GET/POST /ic/transactions
 │   │   ├── stock.go            ← GET /ic/stock
 │   │   ├── summary.go          ← GET /ic/transactions/summary
 │   │   └── compat/
 │   │       ├── read.go         ← GET /ic/warehouses (compat read)
-│   │       └── write.go        ← POST sale-orders / sale-invoices / purchase-orders / products
+│   │       ├── write.go        ← POST sale-orders / sale-invoices / purchase-orders / products, PATCH creditor/doc-ref
+│   │       └── cancel_invoice.go ← POST /ic/sale-invoices/:doc_no/cancel(/preview)
 │   └── middleware/
 │       ├── auth.go             ← API key check
 │       ├── tenant.go           ← database name selection + validation

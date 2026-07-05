@@ -69,6 +69,7 @@ func main() {
 	// Products
 	ph := handlers.NewProductHandler(dbm)
 	v1.GET("/ic/products", ph.List)
+	v1.GET("/ic/units", ph.ListUnits)
 	v1.GET("/ic/products/:code/images", ph.ListImages)
 	v1.GET("/ic/products/:code/images/:roworder", ph.GetImage)
 	v1.GET("/ic/products/:code", ph.Get)
