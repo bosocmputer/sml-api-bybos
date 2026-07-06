@@ -3,7 +3,7 @@ services:
     build: .
     container_name: sml-api-bybos-paperless
     ports:
-      - "8201:8201"
+      - "${HOST_PORT:-8201}:${SERVER_PORT:-8201}"
     env_file:
       - .env
     restart: unless-stopped
