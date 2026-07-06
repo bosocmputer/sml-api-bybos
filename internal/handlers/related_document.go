@@ -260,7 +260,6 @@ func buildRelatedDocumentGraph(ctx context.Context, q relatedDocumentQuerier, ro
 	for _, node := range nodes {
 		nodeList = append(nodeList, node)
 	}
-	sortRelatedNodes(nodeList)
 
 	edgeList := make([]RelatedDocumentEdge, 0, len(edges))
 	for _, edge := range edges {
@@ -272,6 +271,7 @@ func buildRelatedDocumentGraph(ctx context.Context, q relatedDocumentQuerier, ro
 		}
 		return edgeList[i].FromDocNo < edgeList[j].FromDocNo
 	})
+	sortRelatedNodesByFlow(nodeList, edgeList)
 	root, nodeList = assignRelatedSourceDocNos(root, nodeList, edgeList)
 
 	return RelatedDocumentGraph{
@@ -426,16 +426,101 @@ func dedupeRelatedWarnings(items []RelatedDocumentWarning) []RelatedDocumentWarn
 
 func sortRelatedNodes(nodes []RelatedDocumentNode) {
 	sort.Slice(nodes, func(i, j int) bool {
-		ri := relatedDocumentRank(nodes[i])
-		rj := relatedDocumentRank(nodes[j])
-		if ri != rj {
-			return ri < rj
-		}
-		if nodes[i].DocDate != nodes[j].DocDate {
-			return nodes[i].DocDate < nodes[j].DocDate
-		}
-		return nodes[i].DocNo < nodes[j].DocNo
+		return relatedNodeLess(nodes[i], nodes[j])
 	})
+}
+
+func sortRelatedNodesByFlow(nodes []RelatedDocumentNode, edges []RelatedDocumentEdge) {
+	if len(nodes) < 2 {
+		return
+	}
+	byKey := map[string]RelatedDocumentNode{}
+	for _, node := range nodes {
+		byKey[relatedDocKey(node.DocNo)] = node
+	}
+	outgoing := map[string][]string{}
+	inDegree := map[string]int{}
+	for key := range byKey {
+		inDegree[key] = 0
+	}
+	seenEdges := map[string]bool{}
+	for _, edge := range edges {
+		fromKey := relatedDocKey(edge.FromDocNo)
+		toKey := relatedDocKey(edge.ToDocNo)
+		if fromKey == "" || toKey == "" || fromKey == toKey {
+			continue
+		}
+		if _, ok := byKey[fromKey]; !ok {
+			continue
+		}
+		if _, ok := byKey[toKey]; !ok {
+			continue
+		}
+		edgeKey := fromKey + ">" + toKey
+		if seenEdges[edgeKey] {
+			continue
+		}
+		seenEdges[edgeKey] = true
+		outgoing[fromKey] = append(outgoing[fromKey], toKey)
+		inDegree[toKey]++
+	}
+	for key := range outgoing {
+		sort.Slice(outgoing[key], func(i, j int) bool {
+			return relatedNodeLess(byKey[outgoing[key][i]], byKey[outgoing[key][j]])
+		})
+	}
+
+	ready := make([]string, 0, len(nodes))
+	for key, degree := range inDegree {
+		if degree == 0 {
+			ready = append(ready, key)
+		}
+	}
+	sortRelatedNodeKeys(ready, byKey)
+
+	ordered := make([]RelatedDocumentNode, 0, len(nodes))
+	for len(ready) > 0 {
+		key := ready[0]
+		ready = ready[1:]
+		ordered = append(ordered, byKey[key])
+		for _, toKey := range outgoing[key] {
+			inDegree[toKey]--
+			if inDegree[toKey] == 0 {
+				ready = append(ready, toKey)
+			}
+		}
+		sortRelatedNodeKeys(ready, byKey)
+	}
+	if len(ordered) != len(nodes) {
+		sortRelatedNodes(nodes)
+		return
+	}
+	copy(nodes, ordered)
+}
+
+func sortRelatedNodeKeys(keys []string, byKey map[string]RelatedDocumentNode) {
+	sort.Slice(keys, func(i, j int) bool {
+		return relatedNodeLess(byKey[keys[i]], byKey[keys[j]])
+	})
+}
+
+func relatedNodeLess(left, right RelatedDocumentNode) bool {
+	ri := relatedDocumentRank(left)
+	rj := relatedDocumentRank(right)
+	if ri != rj {
+		return ri < rj
+	}
+	if left.DocDate != right.DocDate {
+		return left.DocDate < right.DocDate
+	}
+	if left.DocTime != right.DocTime {
+		return left.DocTime < right.DocTime
+	}
+	return left.DocNo < right.DocNo
+}
+
+func relatedDocKey(docNo string) string {
+	return strings.ToUpper(strings.TrimSpace(docNo))
 }
 
 func relatedDocumentRank(node RelatedDocumentNode) int {

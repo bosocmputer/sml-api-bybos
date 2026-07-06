@@ -100,6 +100,33 @@ func TestAssignRelatedSourceDocNosPrefersImmediateSource(t *testing.T) {
 	}
 }
 
+func TestSortRelatedNodesByFlowUsesSMLEdgesBeforeRankOrDate(t *testing.T) {
+	nodes := []RelatedDocumentNode{
+		{DocNo: "PV26060001", DocFormatCode: "PV", DocDate: "2026-06-04"},
+		{DocNo: "PB26060001", DocFormatCode: "PB", DocDate: "2026-06-03"},
+		{DocNo: "PO26060002", DocFormatCode: "PO", DocDate: "2026-06-01"},
+		{DocNo: "PA26060001", DocFormatCode: "PA", DocDate: "2026-06-02"},
+		{DocNo: "PO26060001", DocFormatCode: "PO", DocDate: "2026-06-01"},
+	}
+	edges := []RelatedDocumentEdge{
+		{FromDocNo: "PO26060001", ToDocNo: "PA26060001", SourceTable: "ic_trans_detail", SourceColumn: "ref_doc_no"},
+		{FromDocNo: "PA26060001", ToDocNo: "PB26060001", SourceTable: "ap_ar_trans_detail", SourceColumn: "billing_no"},
+		{FromDocNo: "PO26060002", ToDocNo: "PB26060001", SourceTable: "ap_ar_trans_detail", SourceColumn: "billing_no"},
+		{FromDocNo: "PB26060001", ToDocNo: "PV26060001", SourceTable: "ap_ar_trans_detail", SourceColumn: "doc_ref"},
+	}
+
+	sortRelatedNodesByFlow(nodes, edges)
+
+	got := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		got = append(got, node.DocNo)
+	}
+	want := []string{"PO26060001", "PO26060002", "PA26060001", "PB26060001", "PV26060001"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("flow order = %v, want %v", got, want)
+	}
+}
+
 func TestNormalizeDirectReferenceCandidates(t *testing.T) {
 	items, truncated := normalizeDirectReferenceCandidates([]directReferenceCandidate{
 		{DocNo: "PB26060001", SourceTable: "ap_ar_trans_detail", SourceColumn: "billing_no"},
