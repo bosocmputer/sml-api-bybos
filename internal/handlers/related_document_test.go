@@ -1,6 +1,9 @@
 package handlers
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseRelatedDepth(t *testing.T) {
 	tests := []struct {
@@ -94,6 +97,46 @@ func TestAssignRelatedSourceDocNosPrefersImmediateSource(t *testing.T) {
 		if got[docNo] != sourceDocNo {
 			t.Fatalf("%s SourceDocNo = %q, want %q", docNo, got[docNo], sourceDocNo)
 		}
+	}
+}
+
+func TestNormalizeDirectReferenceCandidates(t *testing.T) {
+	items, truncated := normalizeDirectReferenceCandidates([]directReferenceCandidate{
+		{DocNo: "PB26060001", SourceTable: "ap_ar_trans_detail", SourceColumn: "billing_no"},
+		{DocNo: "pb26060001", SourceTable: "ap_ar_trans_detail", SourceColumn: "doc_ref"},
+		{DocNo: "PO26060001", SourceTable: "ic_trans_detail", SourceColumn: "ref_doc_no"},
+		{DocNo: "  ", SourceTable: "ic_trans_detail", SourceColumn: "ref_doc_no"},
+	}, 10)
+	if truncated {
+		t.Fatalf("normalizeDirectReferenceCandidates truncated = true, want false")
+	}
+	if len(items) != 2 {
+		t.Fatalf("normalizeDirectReferenceCandidates len = %d, want 2", len(items))
+	}
+	byDocNo := map[string]directReferenceCandidate{}
+	for _, item := range items {
+		byDocNo[strings.ToUpper(item.DocNo)] = item
+	}
+	ref := byDocNo["PB26060001"]
+	if ref.SourceColumn != "doc_ref" {
+		t.Fatalf("PB26060001 SourceColumn = %q, want doc_ref", ref.SourceColumn)
+	}
+}
+
+func TestNormalizeDirectReferenceCandidatesCap(t *testing.T) {
+	items, truncated := normalizeDirectReferenceCandidates([]directReferenceCandidate{
+		{DocNo: "DOC3", SourceTable: "ic_trans_detail", SourceColumn: "ref_doc_no"},
+		{DocNo: "DOC1", SourceTable: "ic_trans_detail", SourceColumn: "ref_doc_no"},
+		{DocNo: "DOC2", SourceTable: "ic_trans_detail", SourceColumn: "ref_doc_no"},
+	}, 2)
+	if !truncated {
+		t.Fatalf("normalizeDirectReferenceCandidates truncated = false, want true")
+	}
+	if len(items) != 2 {
+		t.Fatalf("normalizeDirectReferenceCandidates len = %d, want 2", len(items))
+	}
+	if items[0].DocNo != "DOC1" || items[1].DocNo != "DOC2" {
+		t.Fatalf("normalizeDirectReferenceCandidates order = %v, want DOC1,DOC2", items)
 	}
 }
 

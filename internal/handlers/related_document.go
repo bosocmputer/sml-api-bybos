@@ -22,6 +22,7 @@ const (
 	relatedDefaultDepth = 3
 	relatedMaxDepth     = 4
 	relatedMaxNodes     = 30
+	referenceMaxItems   = 100
 )
 
 type RelatedDocumentHandler struct {
@@ -75,6 +76,35 @@ type RelatedDocumentWarning struct {
 	Message string `json:"message"`
 }
 
+type DocumentReferences struct {
+	Document  RelatedDocumentNode      `json:"document"`
+	Items     []DocumentReferenceItem  `json:"items"`
+	Warnings  []RelatedDocumentWarning `json:"warnings,omitempty"`
+	Total     int                      `json:"total"`
+	Truncated bool                     `json:"truncated"`
+}
+
+type DocumentReferenceItem struct {
+	DocNo           string  `json:"doc_no"`
+	DocDate         string  `json:"doc_date,omitempty"`
+	DocTime         string  `json:"doc_time,omitempty"`
+	DocFormatCode   string  `json:"doc_format_code,omitempty"`
+	DocFormatName   string  `json:"doc_format_name,omitempty"`
+	TransFlag       int     `json:"trans_flag,omitempty"`
+	TransFlagMenu   string  `json:"trans_flag_menu,omitempty"`
+	TransFlagNameTH string  `json:"trans_flag_name_th,omitempty"`
+	TransFlagNameEN string  `json:"trans_flag_name_en,omitempty"`
+	TransType       int     `json:"trans_type,omitempty"`
+	Table           string  `json:"table,omitempty"`
+	PartyCode       string  `json:"party_code,omitempty"`
+	PartyName       string  `json:"party_name,omitempty"`
+	PartyType       string  `json:"party_type,omitempty"`
+	TotalAmount     float64 `json:"total_amount,omitempty"`
+	IsLockRecord    int     `json:"is_lock_record,omitempty"`
+	SourceTable     string  `json:"source_table"`
+	SourceColumn    string  `json:"source_column"`
+}
+
 type relatedQueueItem struct {
 	docNo string
 	depth int
@@ -117,6 +147,44 @@ func (h *RelatedDocumentHandler) Related(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": graph})
+}
+
+// References returns the direct predecessor documents referenced by the current
+// document detail rows. It intentionally does not recurse; PaperLess uses this
+// as a concise "before signing" checklist.
+func (h *RelatedDocumentHandler) References(c *gin.Context) {
+	docNo := strings.TrimSpace(c.Param("doc_no"))
+	if docNo == "" {
+		api.BadRequest(c, "doc_no_required", "doc_no is required", nil)
+		return
+	}
+	docFormatCode := strings.ToUpper(strings.TrimSpace(c.Query("doc_format_code")))
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	pool, err := h.dbm.Get(ctx, c.GetString(middleware.TenantKey))
+	if err != nil {
+		api.Internal(c, "db_pool_error", "could not get tenant database", err.Error())
+		return
+	}
+
+	document, err := findRelatedDocumentHeader(ctx, pool, docNo, docFormatCode)
+	if errors.Is(err, pgx.ErrNoRows) {
+		api.NotFound(c, "document_not_found", "no active document found for doc_no: "+docNo)
+		return
+	}
+	if err != nil {
+		api.Internal(c, "reference_document_lookup_failed", "could not load document", err.Error())
+		return
+	}
+
+	result, err := buildDirectDocumentReferences(ctx, pool, document)
+	if err != nil {
+		api.Internal(c, "document_references_failed", "could not load document references", err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 }
 
 func parseRelatedDepth(value string) int {
@@ -212,6 +280,62 @@ func buildRelatedDocumentGraph(ctx context.Context, q relatedDocumentQuerier, ro
 		Edges:     edgeList,
 		Warnings:  dedupeRelatedWarnings(warnings),
 		Depth:     depth,
+		Truncated: truncated,
+	}, nil
+}
+
+func buildDirectDocumentReferences(ctx context.Context, q relatedDocumentQuerier, document RelatedDocumentNode) (DocumentReferences, error) {
+	candidates, err := findDirectReferenceCandidates(ctx, q, document.DocNo)
+	if err != nil {
+		return DocumentReferences{}, err
+	}
+	candidates, truncated := normalizeDirectReferenceCandidates(candidates, referenceMaxItems)
+
+	items := make([]DocumentReferenceItem, 0, len(candidates))
+	warnings := []RelatedDocumentWarning{}
+	if truncated {
+		warnings = append(warnings, RelatedDocumentWarning{
+			Code:    "reference_limit_reached",
+			DocNo:   document.DocNo,
+			Message: fmt.Sprintf("direct references were capped at %d items", referenceMaxItems),
+		})
+	}
+	for _, candidate := range candidates {
+		node, err := findRelatedDocumentHeader(ctx, q, candidate.DocNo, "")
+		if errors.Is(err, pgx.ErrNoRows) {
+			items = append(items, DocumentReferenceItem{
+				DocNo:        candidate.DocNo,
+				SourceTable:  candidate.SourceTable,
+				SourceColumn: candidate.SourceColumn,
+			})
+			warnings = append(warnings, RelatedDocumentWarning{
+				Code:    "reference_header_missing",
+				DocNo:   candidate.DocNo,
+				Message: fmt.Sprintf("reference %s was found but header document was not found", candidate.DocNo),
+			})
+			continue
+		}
+		if err != nil {
+			return DocumentReferences{}, err
+		}
+		items = append(items, documentReferenceItemFromNode(node, candidate))
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		ri := relatedDocumentRank(RelatedDocumentNode{DocFormatCode: items[i].DocFormatCode, TransFlag: items[i].TransFlag})
+		rj := relatedDocumentRank(RelatedDocumentNode{DocFormatCode: items[j].DocFormatCode, TransFlag: items[j].TransFlag})
+		if ri != rj {
+			return ri < rj
+		}
+		if items[i].DocDate != items[j].DocDate {
+			return items[i].DocDate < items[j].DocDate
+		}
+		return items[i].DocNo < items[j].DocNo
+	})
+	return DocumentReferences{
+		Document:  document,
+		Items:     items,
+		Warnings:  dedupeRelatedWarnings(warnings),
+		Total:     len(items),
 		Truncated: truncated,
 	}, nil
 }
@@ -495,6 +619,124 @@ ORDER BY from_doc_no, to_doc_no, source_table, source_column`, docNo)
 		edges = append(edges, edge)
 	}
 	return edges, rows.Err()
+}
+
+type directReferenceCandidate struct {
+	DocNo        string
+	SourceTable  string
+	SourceColumn string
+}
+
+func findDirectReferenceCandidates(ctx context.Context, q relatedDocumentQuerier, docNo string) ([]directReferenceCandidate, error) {
+	rows, err := q.Query(ctx, `
+SELECT ref_doc_no, source_table, source_column
+FROM (
+    SELECT trim(COALESCE(ref_doc_no,'')) AS ref_doc_no,
+           'ic_trans_detail' AS source_table,
+           'ref_doc_no' AS source_column
+      FROM ic_trans_detail
+     WHERE COALESCE(last_status,0)=0
+       AND trim(COALESCE(doc_no,'')) = $1
+       AND trim(COALESCE(ref_doc_no,'')) <> ''
+     GROUP BY trim(COALESCE(ref_doc_no,''))
+    UNION ALL
+    SELECT trim(COALESCE(billing_no,'')) AS ref_doc_no,
+           'ap_ar_trans_detail' AS source_table,
+           'billing_no' AS source_column
+      FROM ap_ar_trans_detail
+     WHERE COALESCE(last_status,0)=0
+       AND trim(COALESCE(doc_no,'')) = $1
+       AND trim(COALESCE(billing_no,'')) <> ''
+     GROUP BY trim(COALESCE(billing_no,''))
+    UNION ALL
+    SELECT trim(COALESCE(doc_ref,'')) AS ref_doc_no,
+           'ap_ar_trans_detail' AS source_table,
+           'doc_ref' AS source_column
+      FROM ap_ar_trans_detail
+     WHERE COALESCE(last_status,0)=0
+       AND trim(COALESCE(doc_no,'')) = $1
+       AND trim(COALESCE(doc_ref,'')) <> ''
+     GROUP BY trim(COALESCE(doc_ref,''))
+) refs
+WHERE ref_doc_no <> ''
+ORDER BY ref_doc_no, source_table, source_column`, strings.TrimSpace(docNo))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []directReferenceCandidate{}
+	for rows.Next() {
+		var item directReferenceCandidate
+		if err := rows.Scan(&item.DocNo, &item.SourceTable, &item.SourceColumn); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func normalizeDirectReferenceCandidates(items []directReferenceCandidate, limit int) ([]directReferenceCandidate, bool) {
+	byDocNo := map[string]directReferenceCandidate{}
+	for _, item := range items {
+		item.DocNo = strings.TrimSpace(item.DocNo)
+		item.SourceTable = strings.TrimSpace(item.SourceTable)
+		item.SourceColumn = strings.TrimSpace(item.SourceColumn)
+		key := strings.ToUpper(item.DocNo)
+		if item.DocNo == "" {
+			continue
+		}
+		current, ok := byDocNo[key]
+		if !ok || directReferencePriority(item) < directReferencePriority(current) {
+			byDocNo[key] = item
+		}
+	}
+	out := make([]directReferenceCandidate, 0, len(byDocNo))
+	for _, item := range byDocNo {
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DocNo == out[j].DocNo {
+			return directReferencePriority(out[i]) < directReferencePriority(out[j])
+		}
+		return out[i].DocNo < out[j].DocNo
+	})
+	truncated := false
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+		truncated = true
+	}
+	return out, truncated
+}
+
+func directReferencePriority(item directReferenceCandidate) int {
+	return relatedSourceColumnPriority(RelatedDocumentEdge{
+		SourceTable:  item.SourceTable,
+		SourceColumn: item.SourceColumn,
+	})
+}
+
+func documentReferenceItemFromNode(node RelatedDocumentNode, source directReferenceCandidate) DocumentReferenceItem {
+	return DocumentReferenceItem{
+		DocNo:           node.DocNo,
+		DocDate:         node.DocDate,
+		DocTime:         node.DocTime,
+		DocFormatCode:   node.DocFormatCode,
+		DocFormatName:   node.DocFormatName,
+		TransFlag:       node.TransFlag,
+		TransFlagMenu:   node.TransFlagMenu,
+		TransFlagNameTH: node.TransFlagNameTH,
+		TransFlagNameEN: node.TransFlagNameEN,
+		TransType:       node.TransType,
+		Table:           node.Table,
+		PartyCode:       node.PartyCode,
+		PartyName:       node.PartyName,
+		PartyType:       node.PartyType,
+		TotalAmount:     node.TotalAmount,
+		IsLockRecord:    node.IsLockRecord,
+		SourceTable:     source.SourceTable,
+		SourceColumn:    source.SourceColumn,
+	}
 }
 
 type relatedDocumentQuerier interface {

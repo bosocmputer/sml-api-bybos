@@ -153,6 +153,7 @@ func main() {
 	v1.POST("/documents/:doc_no/images", dih.Replace)
 	rdh := handlers.NewRelatedDocumentHandler(dbm)
 	v1.GET("/documents/:doc_no/related", rdh.Related)
+	v1.GET("/documents/:doc_no/references", rdh.References)
 
 	addr := cfg.Server.Host + ":" + cfg.Server.Port
 	srv := &http.Server{
