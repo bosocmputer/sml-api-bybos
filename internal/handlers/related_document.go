@@ -634,27 +634,27 @@ FROM (
     SELECT trim(COALESCE(ref_doc_no,'')) AS ref_doc_no,
            'ic_trans_detail' AS source_table,
            'ref_doc_no' AS source_column
-      FROM ic_trans_detail
+     FROM ic_trans_detail
      WHERE COALESCE(last_status,0)=0
-       AND trim(COALESCE(doc_no,'')) = $1
+       AND doc_no = $1
        AND trim(COALESCE(ref_doc_no,'')) <> ''
      GROUP BY trim(COALESCE(ref_doc_no,''))
     UNION ALL
     SELECT trim(COALESCE(billing_no,'')) AS ref_doc_no,
            'ap_ar_trans_detail' AS source_table,
            'billing_no' AS source_column
-      FROM ap_ar_trans_detail
+     FROM ap_ar_trans_detail
      WHERE COALESCE(last_status,0)=0
-       AND trim(COALESCE(doc_no,'')) = $1
+       AND doc_no = $1
        AND trim(COALESCE(billing_no,'')) <> ''
      GROUP BY trim(COALESCE(billing_no,''))
     UNION ALL
     SELECT trim(COALESCE(doc_ref,'')) AS ref_doc_no,
            'ap_ar_trans_detail' AS source_table,
            'doc_ref' AS source_column
-      FROM ap_ar_trans_detail
+     FROM ap_ar_trans_detail
      WHERE COALESCE(last_status,0)=0
-       AND trim(COALESCE(doc_no,'')) = $1
+       AND doc_no = $1
        AND trim(COALESCE(doc_ref,'')) <> ''
      GROUP BY trim(COALESCE(doc_ref,''))
 ) refs
