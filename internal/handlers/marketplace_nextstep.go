@@ -14,11 +14,14 @@ import (
 )
 
 const (
-	nextStepDocPrefix       = "MQT"
+	nextStepDocPrefixMQT    = "MQT"
+	nextStepDocPrefixPREQT  = "PREQT"
 	nextStepDefaultPageSize = 5
 	nextStepMaxPageSize     = 50
 	nextStepMaxDateDays     = 366
 )
+
+var nextStepDocPrefixes = []string{nextStepDocPrefixMQT, nextStepDocPrefixPREQT}
 
 type nextStepMarketplaceQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
@@ -82,17 +85,18 @@ type NextStepMarketplaceTrendPoint struct {
 }
 
 type NextStepMarketplaceMeta struct {
-	Tenant    string `json:"tenant"`
-	CustCode  string `json:"cust_code"`
-	DocPrefix string `json:"doc_prefix"`
-	DateFrom  string `json:"date_from"`
-	DateTo    string `json:"date_to"`
-	DateBasis string `json:"date_basis"`
-	Source    string `json:"source"`
-	Search    string `json:"search,omitempty"`
-	Page      int    `json:"page"`
-	Size      int    `json:"size"`
-	Total     int    `json:"total"`
+	Tenant      string   `json:"tenant"`
+	CustCode    string   `json:"cust_code,omitempty"`
+	DocPrefix   string   `json:"doc_prefix,omitempty"`
+	DocPrefixes []string `json:"doc_prefixes"`
+	DateFrom    string   `json:"date_from"`
+	DateTo      string   `json:"date_to"`
+	DateBasis   string   `json:"date_basis"`
+	Source      string   `json:"source"`
+	Search      string   `json:"search,omitempty"`
+	Page        int      `json:"page"`
+	Size        int      `json:"size"`
+	Total       int      `json:"total"`
 }
 
 type NextStepMarketplaceOrdersResponse struct {
@@ -102,16 +106,10 @@ type NextStepMarketplaceOrdersResponse struct {
 	Meta    NextStepMarketplaceMeta         `json:"meta"`
 }
 
-// Orders exposes NextStep marketplace MQT order lifecycle from the SML tenant DB.
+// Orders exposes NextStep marketplace order lifecycle from the SML tenant DB.
 // It is read-only and keeps the provided SML SQL semantics while bounding the
-// query by cust_code and ic_qt.doc_date for dashboard use.
+// query by NextStep document prefixes and ic_qt.doc_date for dashboard use.
 func (h *NextStepMarketplaceHandler) Orders(c *gin.Context) {
-	custCode := strings.TrimSpace(c.Query("cust_code"))
-	if custCode == "" {
-		api.BadRequest(c, "missing_cust_code", "cust_code is required", nil)
-		return
-	}
-
 	dateFrom, dateTo, errMsg := parseNextStepDateRange(c.Query("date_from"), c.Query("date_to"))
 	if errMsg != "" {
 		api.BadRequest(c, "invalid_date_range", errMsg, nil)
@@ -133,14 +131,14 @@ func (h *NextStepMarketplaceHandler) Orders(c *gin.Context) {
 	}
 
 	args := pgx.NamedArgs{
-		"cust_code":       custCode,
-		"date_from":       dateFrom,
-		"date_to":         dateTo,
-		"doc_prefix_like": nextStepDocPrefix + "%",
-		"search":          search,
-		"search_like":     "%" + search + "%",
-		"size":            size,
-		"offset":          offset,
+		"date_from":             dateFrom,
+		"date_to":               dateTo,
+		"doc_prefix_mqt_like":   nextStepDocPrefixMQT + "%",
+		"doc_prefix_preqt_like": nextStepDocPrefixPREQT + "%",
+		"search":                search,
+		"search_like":           "%" + search + "%",
+		"size":                  size,
+		"offset":                offset,
 	}
 
 	summary, err := h.querySummary(ctx, pool, args)
@@ -169,17 +167,17 @@ func (h *NextStepMarketplaceHandler) Orders(c *gin.Context) {
 		Orders:  orders,
 		Trend:   trend,
 		Meta: NextStepMarketplaceMeta{
-			Tenant:    tenant,
-			CustCode:  custCode,
-			DocPrefix: nextStepDocPrefix,
-			DateFrom:  dateFrom,
-			DateTo:    dateTo,
-			DateBasis: "ic_qt.doc_date",
-			Source:    "sml.ic_trans",
-			Search:    search,
-			Page:      page,
-			Size:      size,
-			Total:     summary.TotalOrders,
+			Tenant:      tenant,
+			DocPrefix:   strings.Join(nextStepDocPrefixes, "/"),
+			DocPrefixes: append([]string(nil), nextStepDocPrefixes...),
+			DateFrom:    dateFrom,
+			DateTo:      dateTo,
+			DateBasis:   "ic_qt.doc_date",
+			Source:      "sml.ic_trans",
+			Search:      search,
+			Page:        page,
+			Size:        size,
+			Total:       summary.TotalOrders,
 		},
 	})
 }
@@ -499,8 +497,10 @@ WITH base_orders AS (
     COALESCE(ic_qt.total_vat_value, 0)::float8 AS raw_total_vat_value
   FROM ic_trans ic_qt
   WHERE ic_qt.trans_flag = 30
-    AND ic_qt.cust_code = @cust_code
-    AND ic_qt.doc_no LIKE @doc_prefix_like
+    AND (
+      ic_qt.doc_no ILIKE @doc_prefix_mqt_like
+      OR ic_qt.doc_no ILIKE @doc_prefix_preqt_like
+    )
     AND ic_qt.doc_date >= @date_from::date
     AND ic_qt.doc_date <= @date_to::date
     AND (

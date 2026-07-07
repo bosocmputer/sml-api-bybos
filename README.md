@@ -196,6 +196,12 @@ http://localhost:8200/openapi.json
 | `GET` | `/api/v1/tenants/readiness?tenant=` | ตรวจว่า tenant DB และ `${tenant}_images` พร้อมใช้งาน (schema `public.sml_doc_images` ตรงกับ template) |
 | `POST` | `/api/v1/tenants/image-database` | สร้าง/ซ่อม `${tenant}_images` และ schema `sml_doc_images` แบบ guarded ถ้ายังไม่พร้อม |
 
+### Marketplace
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/marketplace/nextstep/orders?date_from=&date_to=` | อ่าน NextStep Marketplace จากเอกสาร `ic_qt` ที่เลขเอกสารขึ้นต้น `MQT` หรือ `PREQT`; `cust_code` ไม่ใช้เป็น filter แล้ว |
+
 ### Inventory / Products (`ic`)
 
 | Method | Path | Description |

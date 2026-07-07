@@ -748,7 +748,7 @@
         "properties": {
           "doc_no": {
             "type": "string",
-            "example": "MQT26070001"
+            "example": "PREQT26070001"
           },
           "doc_date": {
             "type": "string",
@@ -803,13 +803,19 @@
             "type": "string",
             "example": "aoy"
           },
-          "cust_code": {
-            "type": "string",
-            "example": "C001"
-          },
           "doc_prefix": {
             "type": "string",
-            "example": "MQT"
+            "example": "MQT/PREQT"
+          },
+          "doc_prefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "MQT",
+              "PREQT"
+            ]
           },
           "date_basis": {
             "type": "string",
@@ -4227,13 +4233,14 @@
         "tags": [
           "Marketplace"
         ],
-        "summary": "List NextStep marketplace MQT orders from SML",
-        "description": "Read-only dashboard endpoint. Uses ic_qt.doc_date, cust_code, and MQT document prefix, then derives lifecycle status from related SML documents.",
+        "summary": "List NextStep marketplace MQT/PREQT orders from SML",
+        "description": "Read-only dashboard endpoint. Uses ic_qt.doc_date and MQT/PREQT document prefixes, then derives lifecycle status from related SML documents.",
         "parameters": [
           {
             "name": "cust_code",
             "in": "query",
-            "required": true,
+            "required": false,
+            "description": "Deprecated; ignored. NextStep marketplace scope is determined by MQT/PREQT document prefixes.",
             "schema": {
               "type": "string"
             }
@@ -4259,7 +4266,7 @@
           {
             "name": "search",
             "in": "query",
-            "description": "Optional search against MQT doc_no, remark, sale code, or related invoice doc_no.",
+            "description": "Optional search against MQT/PREQT doc_no, remark, sale code, or related invoice doc_no.",
             "schema": {
               "type": "string"
             }

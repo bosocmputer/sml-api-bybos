@@ -174,25 +174,60 @@ func (r *fakeNextStepTrendRows) Conn() *pgx.Conn {
 	return nil
 }
 
-func TestNextStepMarketplaceOrdersRequiresCustCode(t *testing.T) {
+func TestNextStepMarketplaceOrdersDoesNotRequireCustCode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	h := &NextStepMarketplaceHandler{}
+	pool := &fakeNextStepPool{
+		summary: NextStepMarketplaceSummary{
+			TotalOrders:  1,
+			TotalAmount:  1200,
+			PendingCount: 1,
+		},
+		trend: []NextStepMarketplaceTrendPoint{
+			{Date: "2026-07-01", TotalAmount: 1200},
+		},
+	}
+	h := &NextStepMarketplaceHandler{
+		getPool: func(ctx context.Context, tenant string) (nextStepMarketplaceQuerier, error) {
+			return pool, nil
+		},
+	}
 	r := nextStepTestRouter(h)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/orders?date_from=2026-07-01&date_to=2026-07-03", nil)
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
+	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 	}
-	var got api.Response
+	args, ok := pool.lastArgs[0].(pgx.NamedArgs)
+	if !ok {
+		t.Fatalf("args type = %T", pool.lastArgs[0])
+	}
+	if _, ok := args["cust_code"]; ok {
+		t.Fatalf("cust_code arg should not be used: %#v", args)
+	}
+	if args["doc_prefix_mqt_like"] != "MQT%" || args["doc_prefix_preqt_like"] != "PREQT%" {
+		t.Fatalf("prefix args = %#v", args)
+	}
+	if strings.Contains(pool.lastSQL, "ic_qt.cust_code = @cust_code") {
+		t.Fatalf("query should not filter by cust_code: %s", pool.lastSQL)
+	}
+	if !strings.Contains(pool.lastSQL, "ic_qt.doc_no ILIKE @doc_prefix_mqt_like") ||
+		!strings.Contains(pool.lastSQL, "ic_qt.doc_no ILIKE @doc_prefix_preqt_like") {
+		t.Fatalf("query should filter by MQT/PREQT prefixes: %s", pool.lastSQL)
+	}
+
+	var got struct {
+		Success bool                              `json:"success"`
+		Data    NextStepMarketplaceOrdersResponse `json:"data"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Error == nil || got.Error.Code != "missing_cust_code" {
-		t.Fatalf("error = %+v", got.Error)
+	if !got.Success || got.Data.Meta.DocPrefix != "MQT/PREQT" || len(got.Data.Meta.DocPrefixes) != 2 {
+		t.Fatalf("unexpected response = %+v", got)
 	}
 }
 
@@ -203,7 +238,7 @@ func TestNextStepMarketplaceOrdersRejectsLargeDateRange(t *testing.T) {
 	r := nextStepTestRouter(h)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/orders?cust_code=C001&date_from=2026-01-01&date_to=2027-01-05", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orders?date_from=2026-01-01&date_to=2027-01-05", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
@@ -256,7 +291,7 @@ func TestNextStepMarketplaceOrdersReturnsBoundedData(t *testing.T) {
 	r := nextStepTestRouter(h)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/orders?cust_code=C001&date_from=2026-07-01&date_to=2026-07-03&page=2&size=1&search=MQT2607", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orders?date_from=2026-07-01&date_to=2026-07-03&page=2&size=1&search=MQT2607", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
@@ -266,7 +301,11 @@ func TestNextStepMarketplaceOrdersReturnsBoundedData(t *testing.T) {
 	if !ok {
 		t.Fatalf("args type = %T", pool.lastArgs[0])
 	}
-	if args["cust_code"] != "C001" || args["date_from"] != "2026-07-01" || args["date_to"] != "2026-07-03" || args["doc_prefix_like"] != "MQT%" {
+	if _, ok := args["cust_code"]; ok {
+		t.Fatalf("cust_code arg should not be used: %#v", args)
+	}
+	if args["date_from"] != "2026-07-01" || args["date_to"] != "2026-07-03" ||
+		args["doc_prefix_mqt_like"] != "MQT%" || args["doc_prefix_preqt_like"] != "PREQT%" {
 		t.Fatalf("unexpected args = %#v", args)
 	}
 	if args["search"] != "MQT2607" || args["search_like"] != "%MQT2607%" {
@@ -288,6 +327,9 @@ func TestNextStepMarketplaceOrdersReturnsBoundedData(t *testing.T) {
 	}
 	if got.Data.Meta.Search != "MQT2607" {
 		t.Fatalf("meta search = %q", got.Data.Meta.Search)
+	}
+	if got.Data.Meta.DocPrefix != "MQT/PREQT" || len(got.Data.Meta.DocPrefixes) != 2 {
+		t.Fatalf("meta prefixes = %+v", got.Data.Meta)
 	}
 	if got.Data.Summary.StatusCounts["success"] != 1 {
 		t.Fatalf("status_counts = %#v", got.Data.Summary.StatusCounts)
@@ -332,7 +374,7 @@ func TestNextStepMarketplaceOrdersCanSkipOrderRows(t *testing.T) {
 	r := nextStepTestRouter(h)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/orders?cust_code=C001&date_from=2026-07-01&date_to=2026-07-02&include_orders=false", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orders?date_from=2026-07-01&date_to=2026-07-02&include_orders=false", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
