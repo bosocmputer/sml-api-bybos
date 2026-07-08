@@ -60,6 +60,7 @@ func main() {
 	// resolution. It is still protected by the internal API key middleware.
 	ah := handlers.NewAuthHandler(dbm, cfg)
 	v1.POST("/auth/sml/login", ah.Login)
+	v1.POST("/auth/sml/users/sync-candidates", ah.SyncCandidates)
 	trh := handlers.NewTenantReadinessHandler(cfg)
 	v1.GET("/tenants/readiness", trh.Get)
 	v1.POST("/tenants/image-database", trh.ProvisionImageDatabase)
