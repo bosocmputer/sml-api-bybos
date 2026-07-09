@@ -291,7 +291,7 @@ func TestNextStepMarketplaceOrdersReturnsBoundedData(t *testing.T) {
 	r := nextStepTestRouter(h)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/orders?date_from=2026-07-01&date_to=2026-07-03&page=2&size=1&search=MQT2607", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orders?date_from=2026-07-01&date_to=2026-07-03&page=2&size=1&search=MQT2607&status=success", nil)
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
@@ -311,6 +311,9 @@ func TestNextStepMarketplaceOrdersReturnsBoundedData(t *testing.T) {
 	if args["search"] != "MQT2607" || args["search_like"] != "%MQT2607%" {
 		t.Fatalf("search args = %#v", args)
 	}
+	if args["status"] != "success" {
+		t.Fatalf("status arg = %#v", args)
+	}
 	if args["size"] != 1 || args["offset"] != 1 {
 		t.Fatalf("pagination args = %#v", args)
 	}
@@ -328,11 +331,17 @@ func TestNextStepMarketplaceOrdersReturnsBoundedData(t *testing.T) {
 	if got.Data.Meta.Search != "MQT2607" {
 		t.Fatalf("meta search = %q", got.Data.Meta.Search)
 	}
+	if got.Data.Meta.Status != "success" {
+		t.Fatalf("meta status = %q", got.Data.Meta.Status)
+	}
 	if got.Data.Meta.DocPrefix != "MQT/PREQT" || len(got.Data.Meta.DocPrefixes) != 2 {
 		t.Fatalf("meta prefixes = %+v", got.Data.Meta)
 	}
 	if got.Data.Summary.StatusCounts["success"] != 1 {
 		t.Fatalf("status_counts = %#v", got.Data.Summary.StatusCounts)
+	}
+	if !strings.Contains(pool.lastSQL, "WHERE (@status = '' OR o.status = @status)") {
+		t.Fatalf("orders query should filter by status: %s", pool.lastSQL)
 	}
 	if len(got.Data.Orders) != 1 || got.Data.Orders[0].DocNo != "MQT26070001" {
 		t.Fatalf("orders = %+v", got.Data.Orders)
@@ -345,6 +354,28 @@ func TestNextStepMarketplaceOrdersReturnsBoundedData(t *testing.T) {
 	}
 	if got.Data.Trend[2].Date != "2026-07-03" || got.Data.Trend[2].TotalAmount != 1200 {
 		t.Fatalf("trend[2] = %+v", got.Data.Trend[2])
+	}
+}
+
+func TestNextStepMarketplaceOrdersRejectsInvalidStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := &NextStepMarketplaceHandler{}
+	r := nextStepTestRouter(h)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/orders?date_from=2026-07-01&date_to=2026-07-03&status=unknown", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var got api.Response
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Error == nil || got.Error.Code != "invalid_status" {
+		t.Fatalf("error = %+v", got.Error)
 	}
 }
 

@@ -94,6 +94,7 @@ type NextStepMarketplaceMeta struct {
 	DateBasis   string   `json:"date_basis"`
 	Source      string   `json:"source"`
 	Search      string   `json:"search,omitempty"`
+	Status      string   `json:"status,omitempty"`
 	Page        int      `json:"page"`
 	Size        int      `json:"size"`
 	Total       int      `json:"total"`
@@ -116,6 +117,11 @@ func (h *NextStepMarketplaceHandler) Orders(c *gin.Context) {
 		return
 	}
 	search := strings.TrimSpace(c.Query("search"))
+	status, statusErr := parseNextStepStatusFilter(c.Query("status"))
+	if statusErr != "" {
+		api.BadRequest(c, "invalid_status", statusErr, nil)
+		return
+	}
 	includeOrders := parseNextStepIncludeOrders(c.Query("include_orders"))
 	page, size := nextStepPageParams(c)
 	offset := (page - 1) * size
@@ -137,6 +143,7 @@ func (h *NextStepMarketplaceHandler) Orders(c *gin.Context) {
 		"doc_prefix_preqt_like": nextStepDocPrefixPREQT + "%",
 		"search":                search,
 		"search_like":           "%" + search + "%",
+		"status":                status,
 		"size":                  size,
 		"offset":                offset,
 	}
@@ -175,6 +182,7 @@ func (h *NextStepMarketplaceHandler) Orders(c *gin.Context) {
 			DateBasis:   "ic_qt.doc_date",
 			Source:      "sml.ic_trans",
 			Search:      search,
+			Status:      status,
 			Page:        page,
 			Size:        size,
 			Total:       summary.TotalOrders,
@@ -186,12 +194,12 @@ func (h *NextStepMarketplaceHandler) querySummary(ctx context.Context, pool next
 	var summary NextStepMarketplaceSummary
 	err := pool.QueryRow(ctx, nextStepMarketplaceCTE+`
 SELECT
-  COUNT(*)::int AS total_orders,
-  COALESCE(SUM(total_amount), 0)::float8 AS total_amount,
-  COALESCE(SUM(cn_total_amount), 0)::float8 AS cn_total_amount,
-  COALESCE(SUM(total_except_vat), 0)::float8 AS total_except_vat,
-  COALESCE(SUM(total_after_vat), 0)::float8 AS total_after_vat,
-  COALESCE(SUM(total_vat_value), 0)::float8 AS total_vat_value,
+  COUNT(*) FILTER (WHERE @status = '' OR status = @status)::int AS total_orders,
+  COALESCE(SUM(total_amount) FILTER (WHERE @status = '' OR status = @status), 0)::float8 AS total_amount,
+  COALESCE(SUM(cn_total_amount) FILTER (WHERE @status = '' OR status = @status), 0)::float8 AS cn_total_amount,
+  COALESCE(SUM(total_except_vat) FILTER (WHERE @status = '' OR status = @status), 0)::float8 AS total_except_vat,
+  COALESCE(SUM(total_after_vat) FILTER (WHERE @status = '' OR status = @status), 0)::float8 AS total_after_vat,
+  COALESCE(SUM(total_vat_value) FILTER (WHERE @status = '' OR status = @status), 0)::float8 AS total_vat_value,
   COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_count,
   COUNT(*) FILTER (WHERE status = 'packing')::int AS packing_count,
   COUNT(*) FILTER (WHERE status = 'payment')::int AS payment_count,
@@ -223,6 +231,7 @@ SELECT
   doc_date::text AS date,
   COALESCE(SUM(total_amount), 0)::float8 AS total_amount
 FROM order_amounts
+WHERE (@status = '' OR status = @status)
 GROUP BY doc_date
 ORDER BY doc_date`, args)
 	if err != nil {
@@ -278,6 +287,7 @@ paged AS (
     COALESCE(l.ar_billing_no, '') AS ar_billing_no
   FROM order_amounts o
   LEFT JOIN latest_refs l ON l.doc_no = o.doc_no
+  WHERE (@status = '' OR o.status = @status)
   ORDER BY o.doc_date DESC, o.doc_no DESC
   LIMIT @size OFFSET @offset
 )
@@ -445,6 +455,19 @@ func parseNextStepIncludeOrders(raw string) bool {
 		return false
 	default:
 		return true
+	}
+}
+
+func parseNextStepStatusFilter(raw string) (string, string) {
+	status := strings.ToLower(strings.TrimSpace(raw))
+	if status == "" || status == "all" {
+		return "", ""
+	}
+	switch status {
+	case "pending", "packing", "payment", "success", "cancel":
+		return status, ""
+	default:
+		return "", "status must be one of pending, packing, payment, success, cancel"
 	}
 }
 
