@@ -257,6 +257,7 @@ http://localhost:8200/openapi.json
 | `GET` | `/api/v1/ic/doc-formats/by-code?doc_format_code=PO` | ค้นหารูปแบบเอกสารด้วย `erp_doc_format.code` และคืน `screen_code` ของรายการนั้น |
 | `GET` | `/api/v1/ic/doc-no/next` | ดูเลขเอกสารถัดไปจาก SML สำหรับ `saleorder`, `saleinvoice`, `purchaseorder`, `receipt` |
 | `GET` | `/api/v1/ic/document-candidates?doc_format_code=` | ค้นหาเอกสารจาก `ic_trans UNION ALL ap_ar_trans` ตาม `doc_format_code`; `search` เป็น contains literal บน `doc_no`, `cust_code`, `ar_customer.name_1`, `ap_supplier.name_1` |
+| `POST` | `/api/v1/ic/document-candidates/batch` | ตรวจเลขเอกสารแบบ exact match สูงสุด 30 รายการจากทั้ง `ic_trans` และ `ap_ar_trans`; ใช้สำหรับ PaperLess batch import |
 | `GET` | `/api/v1/ic/document-candidates/:doc_no?doc_format_code=` | เอกสารเดี่ยวจากตารางเดียวกับ document-candidates |
 
 ### PaperLess Document Finalization
@@ -622,7 +623,7 @@ sml-api-bybos/
 │   │   ├── erp_master.go       ← branches/users/expenses/incomes/passbooks/sml-user-list
 │   │   ├── doc_format.go       ← erp_doc_format list
 │   │   ├── doc_no.go           ← next doc number preview
-│   │   ├── document_candidate.go ← GET /ic/document-candidates(/:doc_no)
+│   │   ├── document_candidate.go ← GET/POST /ic/document-candidates (single/search/batch)
 │   │   ├── document_image.go   ← POST /documents/:doc_no/images
 │   │   ├── lock.go             ← POST /documents/:doc_no/lock
 │   │   ├── related_document.go ← GET /documents/:doc_no/related

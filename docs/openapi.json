@@ -5010,7 +5010,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Prefix match on doc_no"
+            "description": "Contains-literal match on doc_no, party code, customer name, or supplier name"
           },
           {
             "name": "page",
@@ -5079,6 +5079,99 @@
           },
           "500": {
             "description": "error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/document-candidates/batch": {
+      "post": {
+        "tags": [
+          "Document Lifecycle"
+        ],
+        "summary": "Look up multiple document candidates for PaperLess batch import",
+        "description": "Normalizes up to 30 document numbers to uppercase and performs exact-match lookups in ic_trans and ap_ar_trans without per-document queries.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "docFormatCode",
+                  "docNos"
+                ],
+                "properties": {
+                  "docFormatCode": {
+                    "type": "string",
+                    "maxLength": 25,
+                    "example": "QT"
+                  },
+                  "docNos": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 30,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 25
+                    },
+                    "example": [
+                      "QT26070001",
+                      "QT26070002"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Canonical matching documents and missing document numbers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DocumentCandidate"
+                      }
+                    },
+                    "missingDocNos": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid format code, document number, or batch limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "SML database lookup failed",
             "content": {
               "application/json": {
                 "schema": {
