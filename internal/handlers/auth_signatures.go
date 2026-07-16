@@ -83,7 +83,7 @@ func (h *AuthHandler) UserSignature(c *gin.Context) {
 			return
 		}
 	}
-	canonicalUserCode, allowed, err := h.isActiveSyncCandidateUser(c.Request.Context(), registry, database, userCode)
+	canonicalUserCode, allowed, err := h.isSyncCandidateUser(c.Request.Context(), registry, database, userCode)
 	if err != nil {
 		api.Internal(c, "sml_user_signature_permission_failed", "verify SML signature permission failed", err.Error())
 		return
@@ -120,7 +120,7 @@ func (h *AuthHandler) UserSignature(c *gin.Context) {
 	c.Data(http.StatusOK, signature.ContentType, signature.Data)
 }
 
-func (h *AuthHandler) isActiveSyncCandidateUser(ctx context.Context, q pgxQuerier, database smlLoginDatabase, userCode string) (string, bool, error) {
+func (h *AuthHandler) isSyncCandidateUser(ctx context.Context, q pgxQuerier, database smlLoginDatabase, userCode string) (string, bool, error) {
 	var canonical string
 	err := q.QueryRow(ctx, `
 WITH direct_allowed AS (
@@ -151,7 +151,10 @@ SELECT trim(ul.user_code)
 FROM allowed a
 JOIN public.sml_user_list ul ON lower(trim(ul.user_code)) = a.user_code
 WHERE lower(trim(ul.user_code)) = lower(trim($3))
-  AND COALESCE(ul.active_status,0) = 1
+  AND (
+      COALESCE(ul.active_status,0) = 1
+      OR lower(trim(ul.user_code)) = 'superadmin'
+  )
 LIMIT 1
 `, database.DataGroup, database.DataCode, userCode).Scan(&canonical)
 	if errors.Is(err, pgx.ErrNoRows) {

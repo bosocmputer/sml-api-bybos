@@ -395,7 +395,12 @@ ORDER BY lower(trim(ul.user_code))
 			continue
 		}
 		summary.TotalAllowed++
-		if activeStatus != 1 {
+		// SML installations commonly keep the built-in superadmin at
+		// active_status=0 even though the account can authenticate and is
+		// authorized for tenant databases. Keep ordinary inactive users out of
+		// sync, but include this product-level administrator so its saved
+		// signature can be synchronized.
+		if activeStatus != 1 && !strings.EqualFold(userCode, "superadmin") {
 			summary.SkippedInactive++
 			continue
 		}

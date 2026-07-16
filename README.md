@@ -89,8 +89,8 @@ guid: smlx
 
 PaperLess user synchronization uses two internal auth endpoints that run before tenant-header middleware but remain protected by the API key:
 
-- `POST /api/v1/auth/sml/users/sync-candidates` returns active users plus saved-signature availability, fingerprint, dimensions, and decoded byte size. It never returns Base64 image data.
-- `POST /api/v1/auth/sml/users/signature` returns the JPEG/PNG bytes for one allowed active user after validating `databaseName`, `userCode`, and `expectedVersion`.
+- `POST /api/v1/auth/sml/users/sync-candidates` returns active users plus the built-in SML `superadmin` account, along with saved-signature availability, fingerprint, dimensions, and decoded byte size. Some SML installations keep this login-capable administrator at `active_status=0`; other inactive users remain excluded. The endpoint never returns Base64 image data.
+- `POST /api/v1/auth/sml/users/signature` returns the JPEG/PNG bytes for one allowed sync candidate after validating `databaseName`, `userCode`, and `expectedVersion`.
 
 Saved signatures are matched with `TRIM(UPPER(erp_user.code)) = TRIM(UPPER(sml_user_list.user_code))`. Both raw Base64 and PNG/JPEG data URLs are accepted. Request/image bytes, Base64, passwords, and signature fingerprints must not be written to logs.
 

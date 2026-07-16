@@ -122,11 +122,12 @@ func TestLookupDatabaseNormalizesTenant(t *testing.T) {
 	}
 }
 
-func TestListSyncCandidateUsersFiltersActiveAndHashesPlainPassword(t *testing.T) {
+func TestListSyncCandidateUsersFiltersInactiveExceptSuperadminAndHashesPlainPassword(t *testing.T) {
 	q := &fakeAuthQuerier{
 		userRows: [][]any{
 			{"001", "sml", "plain123", int16(2), int16(1)},
 			{"PUI", "pui", "5f4dcc3b5aa765d61d8327deb882cf99", int16(3), int16(1)},
+			{"superadmin", "System Administrator", "adminpass", int16(2), int16(0)},
 			{"OLD", "inactive", "oldpass", int16(0), int16(0)},
 		},
 	}
@@ -136,10 +137,10 @@ func TestListSyncCandidateUsersFiltersActiveAndHashesPlainPassword(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.TotalAllowed != 3 || summary.Active != 2 || summary.SkippedInactive != 1 || summary.PasswordNotSynced != 1 {
+	if summary.TotalAllowed != 4 || summary.Active != 3 || summary.SkippedInactive != 1 || summary.PasswordNotSynced != 1 {
 		t.Fatalf("summary = %+v", summary)
 	}
-	if len(users) != 2 {
+	if len(users) != 3 {
 		t.Fatalf("users len = %d", len(users))
 	}
 	if users[0].UserCode != "001" || !users[0].PasswordSynced || !strings.HasPrefix(users[0].PasswordHash, "$2") {
@@ -147,6 +148,9 @@ func TestListSyncCandidateUsersFiltersActiveAndHashesPlainPassword(t *testing.T)
 	}
 	if users[1].UserCode != "PUI" || users[1].PasswordSynced || users[1].PasswordHash != "" || users[1].PasswordIssue == "" {
 		t.Fatalf("hashed password user = %+v", users[1])
+	}
+	if users[2].UserCode != "superadmin" || !users[2].PasswordSynced || !strings.HasPrefix(users[2].PasswordHash, "$2") {
+		t.Fatalf("inactive built-in superadmin = %+v", users[2])
 	}
 	if !strings.Contains(q.lastSQL, "sml_user_and_group") {
 		t.Fatalf("sync query should include group users: %s", q.lastSQL)
