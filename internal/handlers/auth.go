@@ -69,19 +69,28 @@ type smlSyncCandidatesRequest struct {
 }
 
 type smlSyncCandidateUser struct {
-	UserCode       string `json:"userCode"`
-	UserName       string `json:"userName"`
-	UserLevel      int16  `json:"userLevel"`
-	PasswordHash   string `json:"passwordHash,omitempty"`
-	PasswordSynced bool   `json:"passwordSynced"`
-	PasswordIssue  string `json:"passwordIssue,omitempty"`
+	UserCode           string `json:"userCode"`
+	UserName           string `json:"userName"`
+	UserLevel          int16  `json:"userLevel"`
+	PasswordHash       string `json:"passwordHash,omitempty"`
+	PasswordSynced     bool   `json:"passwordSynced"`
+	PasswordIssue      string `json:"passwordIssue,omitempty"`
+	SignatureAvailable bool   `json:"signatureAvailable"`
+	SignatureVersion   string `json:"signatureVersion,omitempty"`
+	SignatureBytes     int    `json:"signatureBytes,omitempty"`
+	SignatureWidth     int    `json:"signatureWidth,omitempty"`
+	SignatureHeight    int    `json:"signatureHeight,omitempty"`
+	SignatureIssue     string `json:"signatureIssue,omitempty"`
 }
 
 type smlSyncCandidatesSummary struct {
-	TotalAllowed      int `json:"totalAllowed"`
-	Active            int `json:"active"`
-	SkippedInactive   int `json:"skippedInactive"`
-	PasswordNotSynced int `json:"passwordNotSynced"`
+	TotalAllowed       int `json:"totalAllowed"`
+	Active             int `json:"active"`
+	SkippedInactive    int `json:"skippedInactive"`
+	PasswordNotSynced  int `json:"passwordNotSynced"`
+	SignatureAvailable int `json:"signatureAvailable"`
+	SignatureMissing   int `json:"signatureMissing"`
+	SignatureInvalid   int `json:"signatureInvalid"`
 }
 
 type smlSyncCandidatesResult struct {
@@ -230,6 +239,17 @@ func (h *AuthHandler) SyncCandidates(c *gin.Context) {
 	if err != nil {
 		api.Internal(c, "sml_user_sync_candidates_failed", "load SML sync candidates failed", err.Error())
 		return
+	}
+	if err := h.attachSignatureMetadata(c.Request.Context(), database, users, &summary); err != nil {
+		// User provisioning must remain available even when a tenant's optional
+		// signature source is unavailable. PaperLess surfaces this per user.
+		for i := range users {
+			users[i].SignatureAvailable = false
+			users[i].SignatureIssue = "signature_unavailable"
+		}
+		summary.SignatureAvailable = 0
+		summary.SignatureMissing = 0
+		summary.SignatureInvalid = len(users)
 	}
 
 	api.OK(c, smlSyncCandidatesResult{
