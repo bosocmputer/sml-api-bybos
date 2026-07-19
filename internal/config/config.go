@@ -48,8 +48,8 @@ func Load() *Config {
 	c := &Config{}
 	c.Server.Port = getEnv("SERVER_PORT", "8200")
 	c.Server.Host = getEnv("SERVER_HOST", "0.0.0.0")
-	c.Auth.MainDatabase = strings.ToLower(strings.TrimSpace(getEnv("SML_AUTH_MAIN_DATABASE", "smlerpmainsmlgoh")))
-	c.Auth.Provider = strings.ToLower(strings.TrimSpace(getEnv("SML_AUTH_PROVIDER", "smlgoh")))
+	c.Auth.MainDatabase = strings.ToLower(strings.TrimSpace(getEnv("SML_AUTH_MAIN_DATABASE", "smlerpmaindata")))
+	c.Auth.Provider = strings.ToLower(strings.TrimSpace(getEnv("SML_AUTH_PROVIDER", "data")))
 	c.Auth.DataGroup = strings.ToLower(strings.TrimSpace(getEnv("SML_AUTH_DATAGROUP", "sml")))
 	c.Auth.ImageTemplateDatabase = strings.ToLower(strings.TrimSpace(getEnv("SML_IMAGE_TEMPLATE_DATABASE", "iampcoffee_images")))
 

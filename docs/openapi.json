@@ -1628,7 +1628,7 @@
         "properties": {
           "provider": {
             "type": "string",
-            "example": "smlgoh",
+            "example": "data",
             "description": "Must match SML_AUTH_PROVIDER"
           },
           "dataGroup": {

@@ -57,10 +57,12 @@ docker compose up -d
 | `SML_DB_MIN_CONNS` | `2` | Min connections per tenant pool |
 | `DEFAULT_TENANT` | *(empty)* | Tenant ที่ใช้ถ้าไม่ระบุ header |
 | `ALLOWED_TENANTS` | *(empty = allow all)* | Comma-separated tenant ที่อนุญาต เช่น `sml1_2026,aoy,data1_test` |
-| `SML_AUTH_MAIN_DATABASE` | `smlerpmainsmlgoh` | Database หลักสำหรับ `POST /api/v1/auth/sml/login` (ตรวจ user/password และสิทธิ์ database) |
-| `SML_AUTH_PROVIDER` | `smlgoh` | ค่า `provider` ที่ยอมรับใน login request |
+| `SML_AUTH_MAIN_DATABASE` | `smlerpmaindata` | Database หลักสำหรับ `POST /api/v1/auth/sml/login` (ตรวจ user/password และสิทธิ์ database) |
+| `SML_AUTH_PROVIDER` | `data` | ค่า `provider` ที่ยอมรับใน login request |
 | `SML_AUTH_DATAGROUP` | `sml` | ค่า `dataGroup` ที่ยอมรับใน login request |
 | `SML_IMAGE_TEMPLATE_DATABASE` | `iampcoffee_images` | Template database default สำหรับ tenant readiness/provisioning ของ `${tenant}_images` |
+
+Production ต้องกำหนด `SML_IMAGE_TEMPLATE_DATABASE` ให้เป็น `_images` database มาตรฐานของลูกค้ารายนั้นโดยตรง เช่น `vrh_images` สำหรับวิรัชโฮมมาร์ท ค่า fallback ใช้สำหรับ development เท่านั้น
 
 > A tenant can override the PostgreSQL connection without moving the other tenants:
 >
