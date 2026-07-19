@@ -140,6 +140,12 @@ The runtime API also exposes a readiness endpoint for PaperLess login checks:
 curl -H "X-Api-Key: $API_KEY" "http://localhost:8200/api/v1/tenants/readiness?tenant=stpt"
 ```
 
+The response includes every failed check in `issues[]`. Each issue has a stable
+`code`, the affected `database`, a safe user-facing `message`, and an `owner`
+(`sml_erp`, `paperless`, or `infrastructure`). PostgreSQL error text remains in
+server logs only. Physical column order is ignored; column name, type, length,
+nullability, and default must still match the trusted template.
+
 PaperLess can also trigger a guarded runtime provision when the main tenant DB exists but `${tenant}_images` or `public.sml_doc_images` is missing:
 
 ```bash

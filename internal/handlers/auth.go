@@ -442,33 +442,52 @@ func (h *AuthHandler) attachDatabaseReadiness(ctx context.Context, q pgxQuerier,
 		return
 	}
 	defer rows.Close()
+	catalogReadFailed := false
 	for rows.Next() {
 		var name string
-		if err := rows.Scan(&name); err == nil {
-			existing[strings.ToLower(strings.TrimSpace(name))] = true
+		if err := rows.Scan(&name); err != nil {
+			catalogReadFailed = true
+			break
 		}
+		existing[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	if rows.Err() != nil {
+		catalogReadFailed = true
+	}
+	if catalogReadFailed {
+		for i := range databases {
+			databases[i].Readiness = &smlTenantReadiness{
+				OK:            false,
+				Status:        "unknown",
+				Message:       "cannot verify database readiness right now",
+				Tenant:        databases[i].Tenant,
+				ImageDatabase: productImageDatabaseName(databases[i].Tenant),
+			}
+		}
+		return
 	}
 	for i := range databases {
-		tenant := databases[i].Tenant
-		imageDatabase := productImageDatabaseName(tenant)
-		readiness := &smlTenantReadiness{
-			OK:            true,
-			Status:        "ready",
-			Message:       "พร้อมใช้งาน",
-			Tenant:        tenant,
-			ImageDatabase: imageDatabase,
-		}
-		if !existing[tenant] {
-			readiness.OK = false
-			readiness.Status = "main_db_missing"
-			readiness.Message = "ไม่พบฐานข้อมูล SML หลัก"
-		} else if !existing[imageDatabase] {
-			readiness.OK = false
-			readiness.Status = "image_db_missing"
-			readiness.Message = "ยังไม่มีฐานข้อมูลรูป SML"
-		}
-		databases[i].Readiness = readiness
+		databases[i].Readiness = databaseExistenceReadiness(databases[i].Tenant, existing)
 	}
+}
+
+func databaseExistenceReadiness(tenant string, existing map[string]bool) *smlTenantReadiness {
+	imageDatabase := productImageDatabaseName(tenant)
+	readiness := &smlTenantReadiness{
+		OK:            false,
+		Status:        "unknown",
+		Message:       "พบชื่อฐานข้อมูลแล้ว แต่ยังต้องตรวจสอบการเชื่อมต่อและ schema",
+		Tenant:        tenant,
+		ImageDatabase: imageDatabase,
+	}
+	if !existing[tenant] {
+		readiness.Status = "main_db_missing"
+		readiness.Message = "ไม่พบฐานข้อมูล SML หลัก"
+	} else if !existing[imageDatabase] {
+		readiness.Status = "image_db_missing"
+		readiness.Message = "ยังไม่มีฐานข้อมูลรูป SML"
+	}
+	return readiness
 }
 
 type pgxQuerier interface {

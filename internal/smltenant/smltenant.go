@@ -59,6 +59,7 @@ type VerifyReport struct {
 	TemplateDB    *DatabaseInfo `json:"templateDatabase,omitempty"`
 	MainRows      *DocRows      `json:"mainRows,omitempty"`
 	ImageRows     *DocRows      `json:"imageRows,omitempty"`
+	Cause         error         `json:"-"`
 }
 
 type VerifyOptions struct {
@@ -153,21 +154,21 @@ func VerifyTenant(ctx context.Context, cfg *config.Config, opts VerifyOptions) (
 
 	adminConn, err := pgx.Connect(ctx, cfg.DSN(opts.AdminDatabase))
 	if err != nil {
-		return report, fmt.Errorf("connect admin database: %w", err)
+		return operationalFailure(report, ctx, "admin_database_connection", "database catalog cannot be reached", err)
 	}
 	defer adminConn.Close(ctx)
 
 	mainInfo, err := databaseInfo(ctx, adminConn, opts.Tenant)
 	if err != nil {
-		return report, err
+		return operationalFailure(report, ctx, "admin_database_inspection", "database catalog cannot be inspected", err)
 	}
 	imageInfo, err := databaseInfo(ctx, adminConn, report.ImageDatabase)
 	if err != nil {
-		return report, err
+		return operationalFailure(report, ctx, "admin_database_inspection", "database catalog cannot be inspected", err)
 	}
 	templateInfo, err := databaseInfo(ctx, adminConn, opts.Template)
 	if err != nil {
-		return report, err
+		return operationalFailure(report, ctx, "admin_database_inspection", "database catalog cannot be inspected", err)
 	}
 	report.MainDatabase = &mainInfo
 	report.ImageDB = &imageInfo
@@ -182,12 +183,12 @@ func VerifyTenant(ctx context.Context, cfg *config.Config, opts VerifyOptions) (
 
 	templateConn, err := pgx.Connect(ctx, cfg.DSN(opts.Template))
 	if err != nil {
-		return report, fmt.Errorf("connect template database %s: %w", opts.Template, err)
+		return operationalFailure(report, ctx, "template_database_connection", "template database cannot be reached", err)
 	}
 	defer templateConn.Close(ctx)
 	templateSchema, err := loadDocImagesSchema(ctx, templateConn)
 	if err != nil {
-		return report, err
+		return operationalFailure(report, ctx, "template_schema_inspection", "template schema cannot be inspected", err)
 	}
 	report.addCheck("template_sml_doc_images", templateSchema.hasTable(), "template sml_doc_images schema loaded", "template sml_doc_images table is missing")
 	if !templateSchema.hasTable() {
@@ -197,36 +198,36 @@ func VerifyTenant(ctx context.Context, cfg *config.Config, opts VerifyOptions) (
 
 	mainConn, err := pgx.Connect(ctx, cfg.DSN(opts.Tenant))
 	if err != nil {
-		return report, fmt.Errorf("connect tenant database %s: %w", opts.Tenant, err)
+		return operationalFailure(report, ctx, "tenant_database_connection", "main database cannot be reached", err)
 	}
 	defer mainConn.Close(ctx)
 	mainSchema, err := loadDocImagesSchema(ctx, mainConn)
 	if err != nil {
-		return report, err
+		return operationalFailure(report, ctx, "tenant_schema_inspection", "main database schema cannot be inspected", err)
 	}
 	report.addSchemaChecks("tenant_sml_doc_images", mainSchema, templateSchema)
 	if opts.DocNo != "" {
 		rows, err := loadDocRows(ctx, mainConn, opts.DocNo)
 		if err != nil {
-			return report, err
+			return operationalFailure(report, ctx, "tenant_document_rows_inspection", "main database document images cannot be inspected", err)
 		}
 		report.MainRows = &rows
 	}
 
 	imageConn, err := pgx.Connect(ctx, cfg.DSN(report.ImageDatabase))
 	if err != nil {
-		return report, fmt.Errorf("connect image database %s: %w", report.ImageDatabase, err)
+		return operationalFailure(report, ctx, "image_database_connection", "image database cannot be reached", err)
 	}
 	defer imageConn.Close(ctx)
 	imageSchema, err := loadDocImagesSchema(ctx, imageConn)
 	if err != nil {
-		return report, err
+		return operationalFailure(report, ctx, "image_schema_inspection", "image database schema cannot be inspected", err)
 	}
 	report.addSchemaChecks("image_sml_doc_images", imageSchema, templateSchema)
 	if opts.DocNo != "" {
 		rows, err := loadDocRows(ctx, imageConn, opts.DocNo)
 		if err != nil {
-			return report, err
+			return operationalFailure(report, ctx, "image_document_rows_inspection", "image database document images cannot be inspected", err)
 		}
 		report.ImageRows = &rows
 	}
@@ -405,6 +406,17 @@ func (r *VerifyReport) addCheck(name string, ok bool, okMessage, failMessage str
 	r.Checks = append(r.Checks, Check{Name: name, Status: status, Message: message})
 }
 
+func operationalFailure(report VerifyReport, ctx context.Context, name, message string, cause error) (VerifyReport, error) {
+	if errors.Is(cause, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		name += "_timeout"
+		message = "database readiness verification timed out"
+	}
+	report.Cause = cause
+	report.addCheck(name, false, "", message)
+	report.finalize()
+	return report, nil
+}
+
 func (r *VerifyReport) addSchemaChecks(prefix string, got, want tableSchema) {
 	r.addCheck(prefix+"_table", got.hasTable(), "public."+DocImagesTable+" exists", "public."+DocImagesTable+" is missing")
 	if !got.hasTable() {
@@ -551,19 +563,38 @@ func columnsEqual(a, b []columnSchema) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
-		if a[i].Ordinal != b[i].Ordinal ||
-			a[i].Name != b[i].Name ||
-			a[i].DataType != b[i].DataType ||
-			a[i].UDTName != b[i].UDTName ||
-			a[i].Nullable != b[i].Nullable ||
-			a[i].Default != b[i].Default {
+	wantByName := make(map[string]columnSchema, len(b))
+	for _, col := range b {
+		name := strings.ToLower(strings.TrimSpace(col.Name))
+		if name == "" {
 			return false
 		}
-		if (a[i].CharMax == nil) != (b[i].CharMax == nil) {
+		if _, exists := wantByName[name]; exists {
 			return false
 		}
-		if a[i].CharMax != nil && b[i].CharMax != nil && *a[i].CharMax != *b[i].CharMax {
+		wantByName[name] = col
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, got := range a {
+		name := strings.ToLower(strings.TrimSpace(got.Name))
+		want, ok := wantByName[name]
+		if !ok {
+			return false
+		}
+		if _, exists := seen[name]; exists {
+			return false
+		}
+		seen[name] = struct{}{}
+		if got.DataType != want.DataType ||
+			got.UDTName != want.UDTName ||
+			got.Nullable != want.Nullable ||
+			got.Default != want.Default {
+			return false
+		}
+		if (got.CharMax == nil) != (want.CharMax == nil) {
+			return false
+		}
+		if got.CharMax != nil && want.CharMax != nil && *got.CharMax != *want.CharMax {
 			return false
 		}
 	}

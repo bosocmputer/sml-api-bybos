@@ -58,3 +58,41 @@ func TestBuildProvisionStatements(t *testing.T) {
 		t.Fatalf("primary-key backing index should not be emitted separately:\n%s", joined)
 	}
 }
+
+func TestColumnsEqualIgnoresPhysicalColumnOrder(t *testing.T) {
+	varchar100 := 100
+	want := []columnSchema{
+		{Ordinal: 1, Name: "image_url", DataType: "character varying", UDTName: "varchar", CharMax: &varchar100, Nullable: true, Default: "''::character varying"},
+		{Ordinal: 2, Name: "create_date_time_now", DataType: "timestamp without time zone", UDTName: "timestamp", Nullable: true, Default: "CURRENT_TIMESTAMP"},
+	}
+	got := []columnSchema{
+		{Ordinal: 1, Name: "create_date_time_now", DataType: "timestamp without time zone", UDTName: "timestamp", Nullable: true, Default: "CURRENT_TIMESTAMP"},
+		{Ordinal: 2, Name: "image_url", DataType: "character varying", UDTName: "varchar", CharMax: &varchar100, Nullable: true, Default: "''::character varying"},
+	}
+
+	if !columnsEqual(got, want) {
+		t.Fatal("equivalent columns in a different physical order should match")
+	}
+}
+
+func TestColumnsEqualStillRejectsSemanticDifferences(t *testing.T) {
+	varchar100 := 100
+	varchar50 := 50
+	want := []columnSchema{{Name: "image_url", DataType: "character varying", UDTName: "varchar", CharMax: &varchar100, Nullable: true}}
+	tests := []struct {
+		name string
+		got  []columnSchema
+	}{
+		{name: "missing column", got: nil},
+		{name: "different length", got: []columnSchema{{Name: "image_url", DataType: "character varying", UDTName: "varchar", CharMax: &varchar50, Nullable: true}}},
+		{name: "different nullability", got: []columnSchema{{Name: "image_url", DataType: "character varying", UDTName: "varchar", CharMax: &varchar100, Nullable: false}}},
+		{name: "different type", got: []columnSchema{{Name: "image_url", DataType: "text", UDTName: "text", Nullable: true}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if columnsEqual(tc.got, want) {
+				t.Fatal("semantically different columns should not match")
+			}
+		})
+	}
+}

@@ -170,3 +170,21 @@ func TestLooksLikeOneWayHash(t *testing.T) {
 		}
 	}
 }
+
+func TestDatabaseExistenceReadinessRequiresFullVerification(t *testing.T) {
+	existing := map[string]bool{"vrh": true, "vrh_images": true}
+	got := databaseExistenceReadiness("vrh", existing)
+	if got.OK || got.Status != "unknown" {
+		t.Fatalf("readiness = %+v, want unknown until full schema verification", got)
+	}
+
+	missingImage := databaseExistenceReadiness("bld2", map[string]bool{"bld2": true})
+	if missingImage.Status != "image_db_missing" || missingImage.ImageDatabase != "bld2_images" {
+		t.Fatalf("missing image readiness = %+v", missingImage)
+	}
+
+	missingMain := databaseExistenceReadiness("2bl", map[string]bool{})
+	if missingMain.Status != "main_db_missing" {
+		t.Fatalf("missing main readiness = %+v", missingMain)
+	}
+}
