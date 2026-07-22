@@ -96,6 +96,8 @@ PaperLess user synchronization uses two internal auth endpoints that run before 
 
 Saved signatures are matched with `TRIM(UPPER(erp_user.code)) = TRIM(UPPER(sml_user_list.user_code))`. Both raw Base64 and PNG/JPEG data URLs are accepted. Request/image bytes, Base64, passwords, and signature fingerprints must not be written to logs.
 
+PaperLess internal document generation reads company information through `GET /api/v1/company-profile`. The endpoint uses the selected tenant header, reads one unambiguous row from `public.erp_company_profile`, and returns only normalized company name, address, phone, fax, tax number, and branch fields. A missing table, missing/ambiguous row, empty company name, or timeout returns a safe stable error and blocks internal document creation; the endpoint never modifies SML data.
+
 ---
 
 ## Multi-Tenant
@@ -196,6 +198,12 @@ http://localhost:8200/openapi.json
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/v1/auth/sml/login` | ตรวจ user/password กับฐาน `SML_AUTH_MAIN_DATABASE` และคืนรายการ database ที่ user คนนั้นมีสิทธิ์ (ใช้ registry DB ไม่ผ่าน tenant header) |
+
+### Company Profile
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/company-profile` | อ่านข้อมูลบริษัทหนึ่งแถวจาก `public.erp_company_profile` ของ tenant ที่เลือก สำหรับ snapshot เอกสารภายใน PaperLess |
 
 ### Health
 

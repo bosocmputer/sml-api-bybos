@@ -68,6 +68,9 @@ func main() {
 
 	v1.Use(tenantMW)
 
+	companyProfileHandler := handlers.NewCompanyProfileHandler(dbm)
+	v1.GET("/company-profile", companyProfileHandler.Get)
+
 	// Products
 	ph := handlers.NewProductHandler(dbm)
 	v1.GET("/ic/products", ph.List)
