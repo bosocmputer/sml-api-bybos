@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"sml-api-bybos/internal/api"
 	"sml-api-bybos/internal/db"
@@ -36,6 +37,9 @@ type DocumentCandidate struct {
 	PartyType     string  `json:"party_type"`
 	TotalAmount   float64 `json:"total_amount"`
 	IsLockRecord  int     `json:"is_lock_record"`
+	// SourceRevision is only populated for exact and batch lookups. It is an
+	// opaque fingerprint of the active SML header/detail data, not raw SML data.
+	SourceRevision string `json:"source_revision,omitempty"`
 }
 
 type documentCandidateRow struct {
@@ -152,6 +156,12 @@ func (h *DocumentCandidateHandler) Get(c *gin.Context) {
 		api.Internal(c, "document_candidate_failed", "could not load document", err.Error())
 		return
 	}
+	revisions, err := candidateSourceRevisions(ctx, pool, docFormatCode, []string{item.DocNo})
+	if err != nil {
+		api.Internal(c, "document_candidate_revision_failed", "could not verify document revision", err.Error())
+		return
+	}
+	item.SourceRevision = revisions[candidateRevisionKey(item)]
 	api.OK(c, item)
 }
 
@@ -208,6 +218,14 @@ func (h *DocumentCandidateHandler) Batch(c *gin.Context) {
 		api.Internal(c, "document_candidates_batch_rows_failed", "could not read documents", err.Error())
 		return
 	}
+	revisions, err := candidateSourceRevisions(ctx, pool, docFormatCode, docNos)
+	if err != nil {
+		api.Internal(c, "document_candidates_batch_revision_failed", "could not verify document revisions", err.Error())
+		return
+	}
+	for index := range data {
+		data[index].SourceRevision = revisions[candidateRevisionKey(data[index])]
+	}
 	missing := make([]string, 0)
 	for _, docNo := range docNos {
 		if !found[docNo] {
@@ -219,6 +237,35 @@ func (h *DocumentCandidateHandler) Batch(c *gin.Context) {
 		"data":          data,
 		"missingDocNos": missing,
 	})
+}
+
+func candidateSourceRevisions(ctx context.Context, pool *pgxpool.Pool, docFormatCode string, docNos []string) (map[string]string, error) {
+	rows, err := pool.Query(ctx, candidateSourceRevisionBatchQuery(), pgx.NamedArgs{
+		"doc_format_code": strings.ToUpper(strings.TrimSpace(docFormatCode)),
+		"doc_nos":         docNos,
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]string, len(docNos))
+	for rows.Next() {
+		var docNo, tableName, revision string
+		if err := rows.Scan(&docNo, &tableName, &revision); err != nil {
+			return nil, err
+		}
+		result[candidateRevisionMapKey(tableName, docNo)] = revision
+	}
+	return result, rows.Err()
+}
+
+func candidateRevisionKey(candidate DocumentCandidate) string {
+	return candidateRevisionMapKey(candidate.Table, candidate.DocNo)
+}
+
+func candidateRevisionMapKey(tableName, docNo string) string {
+	return strings.ToLower(strings.TrimSpace(tableName)) + "\x00" + strings.ToUpper(strings.TrimSpace(docNo))
 }
 
 func pageParams(c *gin.Context) (int, int) {
@@ -311,6 +358,41 @@ SELECT doc_no, doc_date, doc_format_code, trans_flag, table_name, trans_type,
        party_code, ar_name, ap_name, total_amount, is_lock_record
   FROM candidates
  ORDER BY doc_date DESC, doc_no DESC`
+}
+
+// candidateSourceRevisionBatchQuery deliberately runs as one bounded query for
+// the full batch. The fingerprint ignores SML's own lock/status bookkeeping so
+// a PaperLess lock does not make the source appear user-edited afterwards.
+func candidateSourceRevisionBatchQuery() string {
+	return `SELECT t.doc_no,
+       'ic_trans' AS table_name,
+       md5(
+           (to_jsonb(t) - 'is_lock_record' - 'last_status')::text || '|' ||
+           COALESCE((
+               SELECT jsonb_agg(to_jsonb(d) - 'last_status' ORDER BY (to_jsonb(d) - 'last_status')::text)::text
+               FROM ic_trans_detail d
+               WHERE d.doc_no = t.doc_no AND COALESCE(d.last_status,0)=0
+           ), '[]')
+       ) AS source_revision
+  FROM ic_trans t
+ WHERE COALESCE(t.last_status,0)=0
+   AND t.doc_format_code = @doc_format_code
+   AND t.doc_no = ANY(@doc_nos)
+UNION ALL
+SELECT t.doc_no,
+       'ap_ar_trans' AS table_name,
+       md5(
+           (to_jsonb(t) - 'is_lock_record' - 'last_status')::text || '|' ||
+           COALESCE((
+               SELECT jsonb_agg(to_jsonb(d) - 'last_status' ORDER BY (to_jsonb(d) - 'last_status')::text)::text
+               FROM ap_ar_trans_detail d
+               WHERE d.doc_no = t.doc_no AND COALESCE(d.last_status,0)=0
+           ), '[]')
+       ) AS source_revision
+  FROM ap_ar_trans t
+ WHERE COALESCE(t.last_status,0)=0
+   AND t.doc_format_code = @doc_format_code
+   AND t.doc_no = ANY(@doc_nos)`
 }
 
 func candidateCTE() string {

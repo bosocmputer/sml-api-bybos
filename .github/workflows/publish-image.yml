@@ -5,12 +5,11 @@ on:
     branches:
       - main
     paths:
-      - cmd/**
-      - internal/**
-      - go.mod
-      - go.sum
-      - Dockerfile
-      - .github/workflows/publish-image.yml
+      - '**'
+      - '!docs/**'
+      - 'docs/go.mod'
+      - 'docs/go.sum'
+      - '.github/workflows/publish-image.yml'
   workflow_dispatch:
 
 permissions:

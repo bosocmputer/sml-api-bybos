@@ -118,6 +118,34 @@ func TestCandidateBatchQueryFiltersEachSourceBeforeUnion(t *testing.T) {
 	}
 }
 
+func TestCandidateSourceRevisionBatchQueryHashesBothHeadersAndDetails(t *testing.T) {
+	query := candidateSourceRevisionBatchQuery()
+	for _, want := range []string{
+		"FROM ic_trans t",
+		"FROM ap_ar_trans t",
+		"FROM ic_trans_detail d",
+		"FROM ap_ar_trans_detail d",
+		"md5(",
+		"to_jsonb(t) - 'is_lock_record' - 'last_status'",
+		"COALESCE(d.last_status,0)=0",
+		"t.doc_no = ANY(@doc_nos)",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("source revision query missing %q:\n%s", want, query)
+		}
+	}
+	if strings.Count(query, "t.doc_no = ANY(@doc_nos)") != 2 {
+		t.Fatalf("source revision must stay batch-scoped for both source tables:\n%s", query)
+	}
+}
+
+func TestCandidateRevisionKeyIsTableAndCaseStable(t *testing.T) {
+	key := candidateRevisionKey(DocumentCandidate{Table: "IC_TRANS", DocNo: " po26070001 "})
+	if key != "ic_trans\x00PO26070001" {
+		t.Fatalf("revision key = %q", key)
+	}
+}
+
 func TestNormalizeBatchDocumentNumbersDeduplicatesBeforeLimitUse(t *testing.T) {
 	values := make([]string, 30)
 	for i := range values {
