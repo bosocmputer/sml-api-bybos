@@ -330,14 +330,15 @@ type tenantReadinessIssue struct {
 }
 
 type tenantReadinessResponse struct {
-	OK            bool                   `json:"ok"`
-	Status        string                 `json:"status"`
-	Message       string                 `json:"message"`
-	Tenant        string                 `json:"tenant"`
-	ImageDatabase string                 `json:"imageDatabase"`
-	Template      string                 `json:"template"`
-	Checks        []smltenant.Check      `json:"checks"`
-	Issues        []tenantReadinessIssue `json:"issues,omitempty"`
+	OK                bool                   `json:"ok"`
+	Status            string                 `json:"status"`
+	Message           string                 `json:"message"`
+	Tenant            string                 `json:"tenant"`
+	ImageDatabase     string                 `json:"imageDatabase"`
+	Template          string                 `json:"template"`
+	Checks            []smltenant.Check      `json:"checks"`
+	Issues            []tenantReadinessIssue `json:"issues,omitempty"`
+	ColumnsRepairable bool                   `json:"columnsRepairable,omitempty"`
 }
 
 func tenantReadinessFromReport(report smltenant.VerifyReport) tenantReadinessResponse {
@@ -360,14 +361,15 @@ func tenantReadinessFromReport(report smltenant.VerifyReport) tenantReadinessRes
 		}
 	}
 	return tenantReadinessResponse{
-		OK:            report.OK,
-		Status:        status,
-		Message:       message,
-		Tenant:        report.Tenant,
-		ImageDatabase: report.ImageDatabase,
-		Template:      report.Template,
-		Checks:        report.Checks,
-		Issues:        issues,
+		OK:                report.OK,
+		Status:            status,
+		Message:           message,
+		Tenant:            report.Tenant,
+		ImageDatabase:     report.ImageDatabase,
+		Template:          report.Template,
+		Checks:            report.Checks,
+		Issues:            issues,
+		ColumnsRepairable: !report.OK && tenantHasOnlyColumnMismatch(report),
 	}
 }
 
