@@ -49,17 +49,18 @@ type DocRows struct {
 }
 
 type VerifyReport struct {
-	Tenant        string        `json:"tenant"`
-	ImageDatabase string        `json:"imageDatabase"`
-	Template      string        `json:"template"`
-	OK            bool          `json:"ok"`
-	Checks        []Check       `json:"checks"`
-	MainDatabase  *DatabaseInfo `json:"mainDatabase,omitempty"`
-	ImageDB       *DatabaseInfo `json:"imageDatabaseInfo,omitempty"`
-	TemplateDB    *DatabaseInfo `json:"templateDatabase,omitempty"`
-	MainRows      *DocRows      `json:"mainRows,omitempty"`
-	ImageRows     *DocRows      `json:"imageRows,omitempty"`
-	Cause         error         `json:"-"`
+	Tenant                string          `json:"tenant"`
+	ImageDatabase         string          `json:"imageDatabase"`
+	Template              string          `json:"template"`
+	OK                    bool            `json:"ok"`
+	Checks                []Check         `json:"checks"`
+	MainDatabase          *DatabaseInfo   `json:"mainDatabase,omitempty"`
+	ImageDB               *DatabaseInfo   `json:"imageDatabaseInfo,omitempty"`
+	TemplateDB            *DatabaseInfo   `json:"templateDatabase,omitempty"`
+	MainRows              *DocRows        `json:"mainRows,omitempty"`
+	ImageRows             *DocRows        `json:"imageRows,omitempty"`
+	ColumnDiffMissingOnly map[string]bool `json:"-"`
+	Cause                 error           `json:"-"`
 }
 
 type VerifyOptions struct {
@@ -515,7 +516,15 @@ func (r *VerifyReport) addSchemaChecks(prefix string, got, want tableSchema) {
 	if !got.hasTable() {
 		return
 	}
-	r.addCheck(prefix+"_columns", columnsEqual(got.Columns, want.Columns), "columns match template", "columns do not match template")
+	diff := diffColumns(got.Columns, want.Columns)
+	columnsMatch := len(diff.Missing) == 0 && !diff.Extra && !diff.Changed
+	r.addCheck(prefix+"_columns", columnsMatch, "columns match template", "columns do not match template")
+	if !columnsMatch {
+		if r.ColumnDiffMissingOnly == nil {
+			r.ColumnDiffMissingOnly = make(map[string]bool, 2)
+		}
+		r.ColumnDiffMissingOnly[prefix] = diff.MissingColumnsOnly()
+	}
 	r.addCheck(prefix+"_sequence", got.HasSequence == want.HasSequence, "roworder sequence matches template", "roworder sequence does not match template")
 	r.addCheck(prefix+"_constraints", constraintsEqual(got.Constraints, want.Constraints), "constraints match template", "constraints do not match template")
 	r.addCheck(prefix+"_indexes", indexesEqual(got.Indexes, want.Indexes), "indexes match template", "indexes do not match template")

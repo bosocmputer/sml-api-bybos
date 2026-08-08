@@ -288,8 +288,12 @@ func (h *TenantReadinessHandler) RepairSchemaColumns(c *gin.Context) {
 }
 
 // tenantHasOnlyColumnMismatch reports whether every failing check on the
-// report is a "_columns" schema check (main and/or image database) — the
-// only category of failure RepairSchemaColumns is allowed to touch.
+// report is a "_columns" schema check (main and/or image database) AND the
+// underlying column diff for each of those is missing-columns-only (no
+// extra or type-mismatched columns) — the only case RepairSchemaColumns is
+// allowed to touch. A "_columns" check can fail for reasons a plain ADD
+// COLUMN cannot fix (extra columns, type/length/nullable mismatches), so
+// the check name alone is not enough to decide repairability.
 func tenantHasOnlyColumnMismatch(report smltenant.VerifyReport) bool {
 	hasColumnFailure := false
 	for _, check := range report.Checks {
@@ -297,7 +301,15 @@ func tenantHasOnlyColumnMismatch(report smltenant.VerifyReport) bool {
 			continue
 		}
 		switch check.Name {
-		case "tenant_sml_doc_images_columns", "image_sml_doc_images_columns":
+		case "tenant_sml_doc_images_columns":
+			if !report.ColumnDiffMissingOnly["tenant_sml_doc_images"] {
+				return false
+			}
+			hasColumnFailure = true
+		case "image_sml_doc_images_columns":
+			if !report.ColumnDiffMissingOnly["image_sml_doc_images"] {
+				return false
+			}
 			hasColumnFailure = true
 		default:
 			return false

@@ -163,25 +163,45 @@ func TestTenantCanProvisionDocImagesRejectsOtherFailures(t *testing.T) {
 
 func TestTenantHasOnlyColumnMismatch(t *testing.T) {
 	tests := []struct {
-		name   string
-		checks []smltenant.Check
-		want   bool
+		name     string
+		checks   []smltenant.Check
+		diffOnly map[string]bool
+		want     bool
 	}{
 		{
-			name: "main columns mismatch only",
+			name: "main columns mismatch, missing-only diff, is repairable",
 			checks: []smltenant.Check{
 				{Name: "main_database", Status: smltenant.CheckOK},
 				{Name: "tenant_sml_doc_images_columns", Status: smltenant.CheckFail},
 			},
-			want: true,
+			diffOnly: map[string]bool{"tenant_sml_doc_images": true},
+			want:     true,
 		},
 		{
-			name: "both main and image columns mismatch",
+			name: "both main and image columns mismatch, both missing-only, is repairable",
 			checks: []smltenant.Check{
 				{Name: "tenant_sml_doc_images_columns", Status: smltenant.CheckFail},
 				{Name: "image_sml_doc_images_columns", Status: smltenant.CheckFail},
 			},
-			want: true,
+			diffOnly: map[string]bool{"tenant_sml_doc_images": true, "image_sml_doc_images": true},
+			want:     true,
+		},
+		{
+			name: "columns mismatch that is NOT missing-only (extra/changed columns) is rejected",
+			checks: []smltenant.Check{
+				{Name: "tenant_sml_doc_images_columns", Status: smltenant.CheckFail},
+			},
+			diffOnly: map[string]bool{"tenant_sml_doc_images": false},
+			want:     false,
+		},
+		{
+			name: "main missing-only but image not missing-only is rejected entirely",
+			checks: []smltenant.Check{
+				{Name: "tenant_sml_doc_images_columns", Status: smltenant.CheckFail},
+				{Name: "image_sml_doc_images_columns", Status: smltenant.CheckFail},
+			},
+			diffOnly: map[string]bool{"tenant_sml_doc_images": true, "image_sml_doc_images": false},
+			want:     false,
 		},
 		{
 			name: "table missing is not a column mismatch",
@@ -196,7 +216,8 @@ func TestTenantHasOnlyColumnMismatch(t *testing.T) {
 				{Name: "tenant_sml_doc_images_columns", Status: smltenant.CheckFail},
 				{Name: "tenant_sml_doc_images_sequence", Status: smltenant.CheckFail},
 			},
-			want: false,
+			diffOnly: map[string]bool{"tenant_sml_doc_images": true},
+			want:     false,
 		},
 		{
 			name:   "ready tenant has no failure to repair",
@@ -206,7 +227,8 @@ func TestTenantHasOnlyColumnMismatch(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tenantHasOnlyColumnMismatch(smltenant.VerifyReport{Checks: tc.checks}); got != tc.want {
+			report := smltenant.VerifyReport{Checks: tc.checks, ColumnDiffMissingOnly: tc.diffOnly}
+			if got := tenantHasOnlyColumnMismatch(report); got != tc.want {
 				t.Fatalf("tenantHasOnlyColumnMismatch = %v, want %v", got, tc.want)
 			}
 		})
