@@ -25,6 +25,12 @@ type provisionTenantImageDatabaseRequest struct {
 	Template string `json:"template"`
 }
 
+type repairTenantSchemaColumnsRequest struct {
+	Tenant   string `json:"tenant"`
+	Template string `json:"template"`
+	Apply    bool   `json:"apply"`
+}
+
 func NewTenantReadinessHandler(cfg *config.Config) *TenantReadinessHandler {
 	return &TenantReadinessHandler{cfg: cfg}
 }
@@ -172,6 +178,132 @@ func (h *TenantReadinessHandler) ProvisionImageDatabase(c *gin.Context) {
 		"provisioned": provisioned,
 		"readiness":   tenantReadinessFromReport(after),
 	})
+}
+
+// RepairSchemaColumns adds columns that exist in the template's
+// public.sml_doc_images but are missing from the tenant's main and/or image
+// database. It refuses to act (and reports which checks blocked it) unless
+// every failing check is a "_columns" mismatch AND the underlying column
+// diff is missing-columns-only (no extra or type-mismatched columns) — any
+// other kind of mismatch requires manual SML ERP admin intervention.
+//
+// With apply=false (the default) this only returns a preview of what would
+// change, without touching the database, so callers can show the tenant
+// exactly what will happen before they consent.
+func (h *TenantReadinessHandler) RepairSchemaColumns(c *gin.Context) {
+	var req repairTenantSchemaColumnsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		api.BadRequest(c, "invalid_json", "request body must be valid JSON", nil)
+		return
+	}
+	tenant := smltenant.NormalizeTenant(req.Tenant)
+	if tenant == "" {
+		api.BadRequest(c, "tenant_required", "tenant is required", nil)
+		return
+	}
+	if len(h.cfg.DB.AllowedTenants) > 0 {
+		if _, ok := h.cfg.DB.AllowedTenants[tenant]; !ok {
+			api.Forbidden(c, "tenant_not_allowed", "tenant is not allowed by this API", gin.H{"tenant": tenant})
+			return
+		}
+	}
+	template := smltenant.NormalizeTenant(req.Template)
+	if template == "" {
+		template = h.cfg.Auth.ImageTemplateDatabase
+	}
+	if template == "" {
+		api.Internal(c, "tenant_readiness_template_missing", "SML image template database is not configured", nil)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+	report, err := smltenant.VerifyTenant(ctx, h.cfg, smltenant.VerifyOptions{
+		Tenant:        tenant,
+		Template:      template,
+		AdminDatabase: "postgres",
+	})
+	if err != nil {
+		api.Error(c, http.StatusBadGateway, "tenant_readiness_failed", "tenant readiness check failed", gin.H{"tenant": tenant})
+		return
+	}
+	logTenantReadinessCause(report)
+	if report.OK {
+		api.OK(c, gin.H{
+			"repaired":  false,
+			"readiness": tenantReadinessFromReport(report),
+		})
+		return
+	}
+	if !tenantHasOnlyColumnMismatch(report) {
+		api.Error(c, http.StatusFailedDependency, "tenant_not_repairable", "tenant schema difference cannot be repaired automatically", tenantReadinessFromReport(report))
+		return
+	}
+
+	imageDatabase := smltenant.ImageDatabaseName(tenant)
+	plans := make([]smltenant.AddMissingColumnsPlan, 0, 2)
+	for _, database := range []string{tenant, imageDatabase} {
+		plan, err := smltenant.BuildAddMissingColumnsPlan(ctx, h.cfg, smltenant.AddMissingColumnsOptions{
+			Database: database,
+			Template: template,
+			Apply:    req.Apply,
+		})
+		if err != nil {
+			api.Error(c, http.StatusFailedDependency, "tenant_not_repairable", "tenant schema difference cannot be repaired automatically: "+err.Error(), tenantReadinessFromReport(report))
+			return
+		}
+		if len(plan.MissingColumns) > 0 {
+			plans = append(plans, plan)
+		}
+	}
+
+	if !req.Apply {
+		api.OK(c, gin.H{
+			"repaired":  false,
+			"dryRun":    true,
+			"plans":     plans,
+			"readiness": tenantReadinessFromReport(report),
+		})
+		return
+	}
+
+	after, err := smltenant.VerifyTenant(ctx, h.cfg, smltenant.VerifyOptions{
+		Tenant:        tenant,
+		Template:      template,
+		AdminDatabase: "postgres",
+	})
+	if err != nil {
+		api.Error(c, http.StatusBadGateway, "tenant_readiness_failed", "tenant readiness check failed after repair", gin.H{"tenant": tenant})
+		return
+	}
+	if !after.OK {
+		api.Error(c, http.StatusFailedDependency, "tenant_still_not_ready", "tenant is still not ready after repair", tenantReadinessFromReport(after))
+		return
+	}
+	api.OK(c, gin.H{
+		"repaired":  true,
+		"plans":     plans,
+		"readiness": tenantReadinessFromReport(after),
+	})
+}
+
+// tenantHasOnlyColumnMismatch reports whether every failing check on the
+// report is a "_columns" schema check (main and/or image database) — the
+// only category of failure RepairSchemaColumns is allowed to touch.
+func tenantHasOnlyColumnMismatch(report smltenant.VerifyReport) bool {
+	hasColumnFailure := false
+	for _, check := range report.Checks {
+		if check.Status == smltenant.CheckOK {
+			continue
+		}
+		switch check.Name {
+		case "tenant_sml_doc_images_columns", "image_sml_doc_images_columns":
+			hasColumnFailure = true
+		default:
+			return false
+		}
+	}
+	return hasColumnFailure
 }
 
 func tenantCanProvisionDocImages(report smltenant.VerifyReport) bool {

@@ -160,3 +160,55 @@ func TestTenantCanProvisionDocImagesRejectsOtherFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestTenantHasOnlyColumnMismatch(t *testing.T) {
+	tests := []struct {
+		name   string
+		checks []smltenant.Check
+		want   bool
+	}{
+		{
+			name: "main columns mismatch only",
+			checks: []smltenant.Check{
+				{Name: "main_database", Status: smltenant.CheckOK},
+				{Name: "tenant_sml_doc_images_columns", Status: smltenant.CheckFail},
+			},
+			want: true,
+		},
+		{
+			name: "both main and image columns mismatch",
+			checks: []smltenant.Check{
+				{Name: "tenant_sml_doc_images_columns", Status: smltenant.CheckFail},
+				{Name: "image_sml_doc_images_columns", Status: smltenant.CheckFail},
+			},
+			want: true,
+		},
+		{
+			name: "table missing is not a column mismatch",
+			checks: []smltenant.Check{
+				{Name: "tenant_sml_doc_images_table", Status: smltenant.CheckFail},
+			},
+			want: false,
+		},
+		{
+			name: "sequence mismatch alongside columns is rejected",
+			checks: []smltenant.Check{
+				{Name: "tenant_sml_doc_images_columns", Status: smltenant.CheckFail},
+				{Name: "tenant_sml_doc_images_sequence", Status: smltenant.CheckFail},
+			},
+			want: false,
+		},
+		{
+			name:   "ready tenant has no failure to repair",
+			checks: []smltenant.Check{{Name: "main_database", Status: smltenant.CheckOK}},
+			want:   false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tenantHasOnlyColumnMismatch(smltenant.VerifyReport{Checks: tc.checks}); got != tc.want {
+				t.Fatalf("tenantHasOnlyColumnMismatch = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

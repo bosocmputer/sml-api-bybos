@@ -330,6 +330,99 @@ func BuildProvisionPlan(ctx context.Context, cfg *config.Config, opts ProvisionO
 	return plan, nil
 }
 
+type AddMissingColumnsOptions struct {
+	Database string
+	Template string
+	Apply    bool
+}
+
+type AddMissingColumnsPlan struct {
+	Database       string   `json:"database"`
+	Template       string   `json:"template"`
+	Apply          bool     `json:"apply"`
+	MissingColumns []string `json:"missingColumns"`
+	Statements     []string `json:"statements"`
+}
+
+// BuildAddMissingColumnsPlan repairs a public.sml_doc_images table that is
+// missing one or more columns present in the template, by generating (and,
+// if Apply is set, executing) ALTER TABLE ... ADD COLUMN statements. It
+// refuses to act if the live table has any extra or type-mismatched column,
+// since only the "missing column" case is a safe, additive repair.
+func BuildAddMissingColumnsPlan(ctx context.Context, cfg *config.Config, opts AddMissingColumnsOptions) (AddMissingColumnsPlan, error) {
+	database := NormalizeTenant(opts.Database)
+	template := NormalizeTenant(opts.Template)
+	plan := AddMissingColumnsPlan{Database: database, Template: template, Apply: opts.Apply}
+	if database == "" {
+		return plan, errors.New("database is required")
+	}
+	if template == "" {
+		return plan, errors.New("template image database is required")
+	}
+
+	templateConn, err := pgx.Connect(ctx, cfg.DSN(template))
+	if err != nil {
+		return plan, fmt.Errorf("connect template database %s: %w", template, err)
+	}
+	defer templateConn.Close(ctx)
+	templateSchema, err := loadDocImagesSchema(ctx, templateConn)
+	if err != nil {
+		return plan, err
+	}
+	if !templateSchema.hasTable() {
+		return plan, fmt.Errorf("template %s does not contain public.%s", template, DocImagesTable)
+	}
+
+	targetConn, err := pgx.Connect(ctx, cfg.DSN(database))
+	if err != nil {
+		return plan, fmt.Errorf("connect database %s: %w", database, err)
+	}
+	defer targetConn.Close(ctx)
+	targetSchema, err := loadDocImagesSchema(ctx, targetConn)
+	if err != nil {
+		return plan, err
+	}
+	if !targetSchema.hasTable() {
+		return plan, fmt.Errorf("public.%s in %s does not exist", DocImagesTable, database)
+	}
+
+	diff := diffColumns(targetSchema.Columns, templateSchema.Columns)
+	if !diff.MissingColumnsOnly() {
+		return plan, fmt.Errorf("public.%s in %s has extra or mismatched columns beyond what an additive repair can fix", DocImagesTable, database)
+	}
+
+	statements := make([]string, 0, len(diff.Missing))
+	names := make([]string, 0, len(diff.Missing))
+	for _, col := range diff.Missing {
+		def, err := columnDefinition(col)
+		if err != nil {
+			return plan, err
+		}
+		statements = append(statements, fmt.Sprintf("ALTER TABLE public.%s ADD COLUMN %s", quoteIdent(DocImagesTable), def))
+		names = append(names, col.Name)
+	}
+	plan.MissingColumns = names
+	plan.Statements = statements
+	if !opts.Apply {
+		return plan, nil
+	}
+
+	tx, err := targetConn.Begin(ctx)
+	if err != nil {
+		return plan, fmt.Errorf("start schema transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, stmt := range statements {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return plan, fmt.Errorf("apply schema statement %q: %w", stmt, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return plan, fmt.Errorf("commit schema: %w", err)
+	}
+	return plan, nil
+}
+
 func EnsureDocImagesSchema(ctx context.Context, cfg *config.Config, databaseName, templateName string) (bool, error) {
 	databaseName = NormalizeTenant(databaseName)
 	templateName = NormalizeTenant(templateName)
@@ -557,6 +650,58 @@ WHERE TRIM(image_id) = $1
 
 func (s tableSchema) hasTable() bool {
 	return len(s.Columns) > 0
+}
+
+// columnDiff classifies how a live table's columns differ from the template.
+type columnDiff struct {
+	Missing []columnSchema // present in template, absent in live table
+	Extra   bool           // live table has a column not in the template
+	Changed bool           // a column present in both has a mismatched type/nullable/default/length
+}
+
+// MissingColumnsOnly reports whether the only difference is that got is
+// missing one or more columns that want has — no extra or changed columns.
+func (d columnDiff) MissingColumnsOnly() bool {
+	return len(d.Missing) > 0 && !d.Extra && !d.Changed
+}
+
+func diffColumns(got, want []columnSchema) columnDiff {
+	var diff columnDiff
+	wantByName := make(map[string]columnSchema, len(want))
+	for _, col := range want {
+		wantByName[strings.ToLower(strings.TrimSpace(col.Name))] = col
+	}
+	gotByName := make(map[string]columnSchema, len(got))
+	for _, col := range got {
+		name := strings.ToLower(strings.TrimSpace(col.Name))
+		gotByName[name] = col
+		if _, ok := wantByName[name]; !ok {
+			diff.Extra = true
+		}
+	}
+	for _, wantCol := range want {
+		name := strings.ToLower(strings.TrimSpace(wantCol.Name))
+		gotCol, ok := gotByName[name]
+		if !ok {
+			diff.Missing = append(diff.Missing, wantCol)
+			continue
+		}
+		if gotCol.DataType != wantCol.DataType ||
+			gotCol.UDTName != wantCol.UDTName ||
+			gotCol.Nullable != wantCol.Nullable ||
+			gotCol.Default != wantCol.Default {
+			diff.Changed = true
+			continue
+		}
+		if (gotCol.CharMax == nil) != (wantCol.CharMax == nil) {
+			diff.Changed = true
+			continue
+		}
+		if gotCol.CharMax != nil && wantCol.CharMax != nil && *gotCol.CharMax != *wantCol.CharMax {
+			diff.Changed = true
+		}
+	}
+	return diff
 }
 
 func columnsEqual(a, b []columnSchema) bool {

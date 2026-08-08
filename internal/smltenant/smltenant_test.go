@@ -96,3 +96,62 @@ func TestColumnsEqualStillRejectsSemanticDifferences(t *testing.T) {
 		})
 	}
 }
+
+func TestDiffColumnsMissingColumnsOnly(t *testing.T) {
+	want := []columnSchema{
+		{Name: "roworder", DataType: "integer", UDTName: "int4", Nullable: false},
+		{Name: "image_url", DataType: "text", UDTName: "text", Nullable: true},
+	}
+	got := []columnSchema{
+		{Name: "roworder", DataType: "integer", UDTName: "int4", Nullable: false},
+	}
+
+	diff := diffColumns(got, want)
+	if !diff.MissingColumnsOnly() {
+		t.Fatalf("expected missing-columns-only diff, got %+v", diff)
+	}
+	if len(diff.Missing) != 1 || diff.Missing[0].Name != "image_url" {
+		t.Fatalf("expected only image_url missing, got %+v", diff.Missing)
+	}
+}
+
+func TestDiffColumnsRejectsExtraColumn(t *testing.T) {
+	want := []columnSchema{{Name: "roworder", DataType: "integer", UDTName: "int4", Nullable: false}}
+	got := []columnSchema{
+		{Name: "roworder", DataType: "integer", UDTName: "int4", Nullable: false},
+		{Name: "legacy_col", DataType: "text", UDTName: "text", Nullable: true},
+	}
+
+	diff := diffColumns(got, want)
+	if diff.MissingColumnsOnly() {
+		t.Fatal("a live table with an extra column must not be treated as missing-columns-only")
+	}
+	if !diff.Extra {
+		t.Fatal("expected Extra to be true")
+	}
+}
+
+func TestDiffColumnsRejectsChangedColumn(t *testing.T) {
+	want := []columnSchema{{Name: "image_url", DataType: "text", UDTName: "text", Nullable: true}}
+	got := []columnSchema{{Name: "image_url", DataType: "character varying", UDTName: "varchar", Nullable: true}}
+
+	diff := diffColumns(got, want)
+	if diff.MissingColumnsOnly() {
+		t.Fatal("a type-mismatched column must not be treated as missing-columns-only")
+	}
+	if !diff.Changed {
+		t.Fatal("expected Changed to be true")
+	}
+}
+
+func TestDiffColumnsNoDifference(t *testing.T) {
+	cols := []columnSchema{{Name: "roworder", DataType: "integer", UDTName: "int4", Nullable: false}}
+
+	diff := diffColumns(cols, cols)
+	if diff.MissingColumnsOnly() {
+		t.Fatal("identical schemas should not report a missing-columns-only diff")
+	}
+	if diff.Extra || diff.Changed || len(diff.Missing) != 0 {
+		t.Fatalf("expected no diff at all, got %+v", diff)
+	}
+}
