@@ -76,6 +76,7 @@ func main() {
 	ph := handlers.NewProductHandler(dbm)
 	v1.GET("/ic/products", ph.List)
 	v1.GET("/ic/units", ph.ListUnits)
+	v1.GET("/ic/products/:code/units", ph.ListProductUnits)
 	v1.GET("/ic/products/:code/images", ph.ListImages)
 	v1.GET("/ic/products/:code/images/:roworder", ph.GetImage)
 	v1.GET("/ic/products/:code", ph.Get)
@@ -110,6 +111,10 @@ func main() {
 	skh := handlers.NewStockHandler(dbm)
 	v1.GET("/ic/stock", skh.List)
 	v1.GET("/ic/stock/:code", skh.Get)
+	stockSyncHandler := handlers.NewStockSyncHandler(dbm)
+	v1.GET("/ic/stock-locations", stockSyncHandler.Locations)
+	v1.GET("/ic/stock-catalog", stockSyncHandler.Catalog)
+	v1.POST("/ic/stock-balances/batch", stockSyncHandler.BalancesBatch)
 
 	// Write — sale orders, invoices, purchase orders, products
 	cw := compat.NewWriteHandler(dbm, logger)

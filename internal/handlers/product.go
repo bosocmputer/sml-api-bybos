@@ -91,7 +91,7 @@ JOIN public.ic_inventory i ON i.code = uu.ic_code
 LEFT JOIN public.ic_unit unit ON unit.code = uu.code
 WHERE uu.ic_code = $1
   AND COALESCE(uu.status, 0) = 0
-ORDER BY COALESCE(uu.line_number, uu.row_order, 0), uu.code`
+ORDER BY COALESCE(uu.row_order, 2147483647), COALESCE(uu.line_number, 2147483647), uu.code`
 
 func NewProductHandler(dbm *db.Manager) *ProductHandler {
 	return &ProductHandler{dbm: dbm}

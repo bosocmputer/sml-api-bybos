@@ -264,6 +264,14 @@ http://localhost:8200/openapi.json
 |---|---|---|
 | `GET` | `/api/v1/ic/stock` | ยอดคงเหลือสต๊อกทั้งหมด (paginated) |
 | `GET` | `/api/v1/ic/stock/:code` | ยอดคงเหลือสต๊อกตาม item code |
+| `GET` | `/api/v1/ic/stock-locations` | คลัง/พื้นที่ active พร้อมยอด orphan/blank สำหรับตรวจ config |
+| `GET` | `/api/v1/ic/stock-catalog` | สินค้า stock active พร้อม barcode และหน่วยเรียง `row_order`, `line_number`, `code` |
+| `POST` | `/api/v1/ic/stock-balances/batch` | คำนวณยอดหลาย warehouse scope แบบ parameterized สำหรับ marketplace stock sync |
+
+`stock-balances/batch` จำกัด 20 scopes, 50,000 item codes และ 1,000
+warehouse/location pairs ต่อ request ระบบเรียก stock function โดยส่ง filter ว่าง
+แล้วใช้ `ANY($n)` ภายนอก จึงไม่ส่ง input จาก HTTP เข้า dynamic SQL ของ SML
+โดยตรง
 
 ### Warehouses
 

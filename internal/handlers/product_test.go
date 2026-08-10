@@ -96,6 +96,10 @@ func TestProductUnitsQueryReadsProductUnitTableAndUnitNames(t *testing.T) {
 	if !strings.Contains(sql, "coalesce(uu.status, 0) = 0") {
 		t.Fatal("product units query must filter inactive product-unit rows")
 	}
+	if !strings.Contains(sql, "order by coalesce(uu.row_order") ||
+		strings.Index(sql, "uu.row_order") > strings.Index(sql, "uu.line_number") {
+		t.Fatal("product units query must prioritize row_order before line_number")
+	}
 }
 
 func TestFirstNonEmptyTrimsValues(t *testing.T) {
