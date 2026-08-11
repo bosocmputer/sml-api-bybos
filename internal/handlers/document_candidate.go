@@ -360,16 +360,95 @@ SELECT doc_no, doc_date, doc_format_code, trans_flag, table_name, trans_type,
  ORDER BY doc_date DESC, doc_no DESC`
 }
 
+// numericColumnsNeedingScale lists, per source table, every `numeric` column
+// observed in production without a fixed scale (information_schema.columns,
+// numeric_scale IS NULL). Postgres preserves the exact literal text of an
+// unscaled numeric, so an SML-side rewrite that changes only trailing-zero
+// formatting (e.g. 65245.00 -> 65245.0000) flips to_jsonb()'s text output
+// with zero real change to the value. Rounding these columns to a fixed
+// scale before hashing removes that noise while still hashing every other
+// column (including any SML adds later) unchanged, since this is applied on
+// top of the whole row rather than replacing it with a curated subset.
+var numericColumnsNeedingScale = map[string][]string{
+	"ic_trans": {
+		"advance_amount", "balance_amount", "currency_money", "exchange_rate",
+		"lost_profit_exchange_amount", "money", "pay_amount", "recheck_count_day",
+		"ref_amount", "ref_diff", "ref_new_amount", "sum_pay_money_diff", "sum_point",
+		"sum_point_2", "total_after_vat", "total_amount", "total_amount_2",
+		"total_amout_old", "total_before_vat", "total_cost", "total_debt_amount",
+		"total_discount", "total_discount_2", "total_except_vat", "total_service_charge",
+		"total_value", "total_value_2", "total_vat_value", "transport_value", "vat_rate",
+	},
+	"ic_trans_detail": {
+		"average_cost", "average_cost_1", "cancel_qty", "discount_amount",
+		"discount_amount_2", "divide_value", "exchange_rate", "exchange_rate_old",
+		"fee_amount", "hidden_cost_1", "hidden_cost_1_exclude_vat", "hidden_cost_2",
+		"hidden_cost_2_exclude_vat", "price", "price_2", "price_base", "price_default",
+		"price_exclude_vat", "price_set_ratio", "profit_lost_cost_amount", "qty", "qty_2",
+		"ratio", "set_ref_price", "set_ref_qty", "stand_value", "sum_amount",
+		"sum_amount_2", "sum_amount_exclude_vat", "sum_of_cost", "sum_of_cost_1",
+		"sum_of_cost_fix", "temp_float_1", "temp_float_2", "total_qty", "total_size",
+		"total_vat_value", "transfer_amount", "unit_size",
+	},
+	"ap_ar_trans": {
+		"amount", "currency_money", "exchange_rate", "lost_profit_exchange_amount",
+		"money_balance", "sum_pay_money_cash", "sum_pay_money_chq", "sum_pay_money_credit",
+		"sum_pay_money_diff", "sum_pay_money_transfer", "total_after_discount",
+		"total_after_vat", "total_before_vat", "total_debt_balance", "total_debt_value",
+		"total_discount", "total_net_value", "total_net_value_2", "total_pay_money",
+		"total_pay_tax", "total_value", "total_vat_value", "vat_rate",
+	},
+	"ap_ar_trans_detail": {
+		"balance_ref", "balance_ref_2", "exchange_rate", "exchange_rate_old",
+		"final_amount", "lost_profit_exchange_amount", "sum_after_discount",
+		"sum_before_vat", "sum_debt_amount", "sum_debt_amount_2", "sum_debt_balance",
+		"sum_debt_value", "sum_discount", "sum_pay_money", "sum_pay_money_2",
+		"sum_pay_money_cash", "sum_pay_money_chq", "sum_pay_money_credit",
+		"sum_pay_money_transfer", "sum_tax_value", "sum_value", "vat_rate",
+	},
+}
+
+// normalizedRowJSONExpr wraps a to_jsonb(alias) expression with jsonb_set
+// calls that round every unscaled numeric column of table to 2 decimal
+// places, so trailing-zero formatting differences no longer change the
+// resulting JSON text. 2 decimal places matches the amount-comparison
+// tolerance already used by legacySMLSourceMatchesDocument in paperless-v2.
+// NULL values are rounded to SQL NULL, not coalesced to 0 — a real edit
+// between NULL and 0 must still change the hash, since those are distinct
+// states even though both are "no meaningful amount" in most SML columns.
+func normalizedRowJSONExpr(alias, table string) string {
+	expr := fmt.Sprintf("to_jsonb(%s)", alias)
+	for _, col := range numericColumnsNeedingScale[table] {
+		// jsonb_set returns SQL NULL for the WHOLE expression if the
+		// replacement value itself is SQL NULL (as opposed to a JSON
+		// null) — to_jsonb(ROUND(NULL::numeric,2)) is exactly that trap.
+		// COALESCE to a real JSON 'null' so a NULL column normalizes to
+		// {"col": null} instead of collapsing the entire row to NULL.
+		expr = fmt.Sprintf(
+			"jsonb_set(%s, '{%s}', COALESCE(to_jsonb(ROUND(%s.%s::numeric, 2)), 'null'::jsonb), true)",
+			expr, col, alias, col,
+		)
+	}
+	return expr
+}
+
 // candidateSourceRevisionBatchQuery deliberately runs as one bounded query for
 // the full batch. The fingerprint ignores SML's own lock/status bookkeeping so
-// a PaperLess lock does not make the source appear user-edited afterwards.
+// a PaperLess lock does not make the source appear user-edited afterwards. All
+// unscaled `numeric` columns are rounded to 2 decimal places before hashing
+// (see numericColumnsNeedingScale) so SML-side rewrites that only change
+// numeric text formatting, with no real value change, do not flip the hash.
 func candidateSourceRevisionBatchQuery() string {
+	icHeader := normalizedRowJSONExpr("t", "ic_trans")
+	icDetail := normalizedRowJSONExpr("d", "ic_trans_detail")
+	apHeader := normalizedRowJSONExpr("t", "ap_ar_trans")
+	apDetail := normalizedRowJSONExpr("d", "ap_ar_trans_detail")
 	return `SELECT t.doc_no,
        'ic_trans' AS table_name,
        md5(
-           (to_jsonb(t) - 'is_lock_record' - 'last_status')::text || '|' ||
+           (` + icHeader + ` - 'is_lock_record' - 'last_status')::text || '|' ||
            COALESCE((
-               SELECT jsonb_agg(to_jsonb(d) - 'last_status' ORDER BY (to_jsonb(d) - 'last_status')::text)::text
+               SELECT jsonb_agg((` + icDetail + `) - 'last_status' ORDER BY ((` + icDetail + `) - 'last_status')::text)::text
                FROM ic_trans_detail d
                WHERE d.doc_no = t.doc_no AND COALESCE(d.last_status,0)=0
            ), '[]')
@@ -382,9 +461,9 @@ UNION ALL
 SELECT t.doc_no,
        'ap_ar_trans' AS table_name,
        md5(
-           (to_jsonb(t) - 'is_lock_record' - 'last_status')::text || '|' ||
+           (` + apHeader + ` - 'is_lock_record' - 'last_status')::text || '|' ||
            COALESCE((
-               SELECT jsonb_agg(to_jsonb(d) - 'last_status' ORDER BY (to_jsonb(d) - 'last_status')::text)::text
+               SELECT jsonb_agg((` + apDetail + `) - 'last_status' ORDER BY ((` + apDetail + `) - 'last_status')::text)::text
                FROM ap_ar_trans_detail d
                WHERE d.doc_no = t.doc_no AND COALESCE(d.last_status,0)=0
            ), '[]')

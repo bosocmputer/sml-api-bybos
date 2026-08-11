@@ -126,7 +126,7 @@ func TestCandidateSourceRevisionBatchQueryHashesBothHeadersAndDetails(t *testing
 		"FROM ic_trans_detail d",
 		"FROM ap_ar_trans_detail d",
 		"md5(",
-		"to_jsonb(t) - 'is_lock_record' - 'last_status'",
+		"- 'is_lock_record' - 'last_status'",
 		"COALESCE(d.last_status,0)=0",
 		"t.doc_no = ANY(@doc_nos)",
 	} {
@@ -136,6 +136,55 @@ func TestCandidateSourceRevisionBatchQueryHashesBothHeadersAndDetails(t *testing
 	}
 	if strings.Count(query, "t.doc_no = ANY(@doc_nos)") != 2 {
 		t.Fatalf("source revision must stay batch-scoped for both source tables:\n%s", query)
+	}
+}
+
+func TestCandidateSourceRevisionBatchQueryNormalizesUnscaledNumericColumns(t *testing.T) {
+	query := candidateSourceRevisionBatchQuery()
+
+	// Every unscaled numeric column on all four source/detail tables must be
+	// rounded before hashing, or trailing-zero formatting drift in that
+	// column can still flip the fingerprint with zero real content change.
+	for table, cols := range numericColumnsNeedingScale {
+		for _, col := range cols {
+			want := "'{" + col + "}'"
+			if !strings.Contains(query, want) {
+				t.Fatalf("source revision query missing normalization for %s.%s (jsonb_set path %q):\n%s", table, col, want, query)
+			}
+		}
+	}
+
+	if !strings.Contains(query, "ROUND(") {
+		t.Fatalf("source revision query must round numeric columns:\n%s", query)
+	}
+	if strings.Count(query, "jsonb_set(") == 0 {
+		t.Fatalf("source revision query must normalize via jsonb_set:\n%s", query)
+	}
+}
+
+func TestNormalizedRowJSONExprRoundsEveryConfiguredColumn(t *testing.T) {
+	expr := normalizedRowJSONExpr("t", "ic_trans")
+	if got, want := strings.Count(expr, "jsonb_set("), len(numericColumnsNeedingScale["ic_trans"]); got != want {
+		t.Fatalf("normalizedRowJSONExpr(ic_trans) has %d jsonb_set calls, want %d", got, want)
+	}
+	if !strings.Contains(expr, "to_jsonb(t)") {
+		t.Fatalf("normalizedRowJSONExpr must build on to_jsonb(alias): %s", expr)
+	}
+	// Every column must COALESCE to a real JSON null, not a SQL NULL —
+	// jsonb_set collapses its whole result to SQL NULL if the replacement
+	// value itself is SQL NULL, which would silently drop every other
+	// column's contribution to the hash whenever one numeric field is NULL.
+	if got, want := strings.Count(expr, "COALESCE(to_jsonb(ROUND("), len(numericColumnsNeedingScale["ic_trans"]); got != want {
+		t.Fatalf("normalizedRowJSONExpr(ic_trans) has %d NULL-safe COALESCE wrappers, want %d", got, want)
+	}
+	if !strings.Contains(expr, "'null'::jsonb") {
+		t.Fatalf("normalizedRowJSONExpr must fall back to JSON null, not SQL NULL: %s", expr)
+	}
+	// Unknown table: no normalization columns configured, so it must fall
+	// back to a bare to_jsonb() with zero jsonb_set wrapping.
+	bare := normalizedRowJSONExpr("t", "some_other_table")
+	if bare != "to_jsonb(t)" {
+		t.Fatalf("normalizedRowJSONExpr(unknown table) = %q, want bare to_jsonb(t)", bare)
 	}
 }
 
