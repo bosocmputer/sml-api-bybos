@@ -438,6 +438,36 @@ func normalizedRowJSONExpr(alias, table string) string {
 // unscaled `numeric` columns are rounded to 2 decimal places before hashing
 // (see numericColumnsNeedingScale) so SML-side rewrites that only change
 // numeric text formatting, with no real value change, do not flip the hash.
+// It also excludes `guid_code` (ic_trans/ap_ar_trans headers only — confirmed
+// against production that neither detail table has this column) — a
+// transient marker SML's web service writes the instant a user opens the
+// document for editing, before Save, and clears on both Save and Cancel.
+// Including it would false-positive on merely viewing/starting to edit an
+// in-flight document, not just on an actual committed change.
+//
+// Runbook for finding the next transient/session marker like this one, if a
+// future false-positive report shows no real business-field difference in
+// the diff metadata (paperless-v2 already surfaces this per-mismatch):
+//
+//	-- 1. List a table's columns to spot candidates (guid/session/token-like
+//	--    names are a good starting filter, but check anything unfamiliar):
+//	SELECT column_name FROM information_schema.columns WHERE table_name = '<table>';
+//
+//	-- 2. For a suspect column, check how rarely it's populated:
+//	SELECT count(*) FILTER (WHERE <col> IS NOT NULL AND <col> <> '') AS non_empty,
+//	       count(*) AS total
+//	FROM <table>;
+//	-- If non_empty is a tiny fraction of total, and the non-empty row(s)
+//	-- match a document someone currently has open for edit in the SML UI at
+//	-- that moment (not a document that was edited and saved earlier), it's
+//	-- likely a transient marker — exclude it the same way as guid_code.
+//
+// Columns already checked (found while investigating the guid_code case):
+// excluded — guid_code (ic_trans, ap_ar_trans headers). Checked and left
+// in the hash on purpose — doc_no_guid, period_guid (ic_trans),
+// price_guid, ref_guid, is_lock_cost (ic_trans_detail): all stayed empty
+// even on the one document confirmed open for edit at investigation time,
+// so they don't follow the transient-marker pattern.
 func candidateSourceRevisionBatchQuery() string {
 	icHeader := normalizedRowJSONExpr("t", "ic_trans")
 	icDetail := normalizedRowJSONExpr("d", "ic_trans_detail")
@@ -446,7 +476,7 @@ func candidateSourceRevisionBatchQuery() string {
 	return `SELECT t.doc_no,
        'ic_trans' AS table_name,
        md5(
-           (` + icHeader + ` - 'is_lock_record' - 'last_status')::text || '|' ||
+           (` + icHeader + ` - 'is_lock_record' - 'last_status' - 'guid_code')::text || '|' ||
            COALESCE((
                SELECT jsonb_agg((` + icDetail + `) - 'last_status' ORDER BY ((` + icDetail + `) - 'last_status')::text)::text
                FROM ic_trans_detail d
@@ -461,7 +491,7 @@ UNION ALL
 SELECT t.doc_no,
        'ap_ar_trans' AS table_name,
        md5(
-           (` + apHeader + ` - 'is_lock_record' - 'last_status')::text || '|' ||
+           (` + apHeader + ` - 'is_lock_record' - 'last_status' - 'guid_code')::text || '|' ||
            COALESCE((
                SELECT jsonb_agg((` + apDetail + `) - 'last_status' ORDER BY ((` + apDetail + `) - 'last_status')::text)::text
                FROM ap_ar_trans_detail d

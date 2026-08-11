@@ -188,6 +188,28 @@ func TestNormalizedRowJSONExprRoundsEveryConfiguredColumn(t *testing.T) {
 	}
 }
 
+func TestCandidateSourceRevisionBatchQueryExcludesGuidCode(t *testing.T) {
+	query := candidateSourceRevisionBatchQuery()
+
+	// guid_code is a transient "document is open for editing in the SML UI"
+	// marker (see the doc comment on candidateSourceRevisionBatchQuery) —
+	// it must be excluded from both header hashes together with the
+	// existing is_lock_record/last_status exclusions, on the same chain,
+	// or a future edit could silently drop it from one branch only.
+	want := "- 'is_lock_record' - 'last_status' - 'guid_code'"
+	if !strings.Contains(query, want) {
+		t.Fatalf("source revision query missing full exclusion chain %q:\n%s", want, query)
+	}
+	// Exactly 2 occurrences total (one per header branch) also proves
+	// guid_code does NOT leak into the detail-row jsonb_agg subqueries —
+	// neither ic_trans_detail nor ap_ar_trans_detail has this column
+	// (confirmed against production information_schema.columns), so the
+	// detail hash must keep excluding only 'last_status'.
+	if got := strings.Count(query, "'guid_code'"); got != 2 {
+		t.Fatalf("source revision query excludes guid_code %d times, want exactly 2 (ic_trans and ap_ar_trans headers only):\n%s", got, query)
+	}
+}
+
 func TestCandidateRevisionKeyIsTableAndCaseStable(t *testing.T) {
 	key := candidateRevisionKey(DocumentCandidate{Table: "IC_TRANS", DocNo: " po26070001 "})
 	if key != "ic_trans\x00PO26070001" {
