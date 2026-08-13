@@ -55,7 +55,10 @@ func CheckCapability(ctx context.Context, tenant string, q Queryer) error {
 	}
 
 	setColumns := []string{"ic_set_code", "ic_code", "unit_code", "qty", "status", "line_number", "roworder", "price", "sum_amount", "price_ratio"}
-	inventoryColumns := []string{"code", "name_1", "item_type", "unit_standard", "status"}
+	inventoryColumns := []string{
+		"code", "name_1", "item_type", "unit_standard",
+		"unit_standard_stand_value", "unit_standard_divide_value", "status",
+	}
 	unitColumns := []string{"ic_code", "code", "stand_value", "divide_value", "status", "row_order", "line_number"}
 	var setCount, inventoryCount, unitCount int
 	err := q.QueryRow(ctx, `SELECT
@@ -149,13 +152,27 @@ func LoadDefinitions(ctx context.Context, q Queryer, tenant string, itemCodes []
 		FROM public.ic_inventory_set_detail sd
 		LEFT JOIN public.ic_inventory component ON component.code = sd.ic_code
 		LEFT JOIN LATERAL (
-			SELECT u.code, COALESCE(u.stand_value, 0)::float8 AS stand_value,
-			       COALESCE(u.divide_value, 0)::float8 AS divide_value
-			FROM public.ic_unit_use u
-			WHERE u.ic_code = sd.ic_code
-			  AND u.code = sd.unit_code
-			  AND COALESCE(u.status, 0) = 0
-			ORDER BY COALESCE(u.row_order, 2147483647), COALESCE(u.line_number, 2147483647), u.code
+			SELECT candidate.code, candidate.stand_value, candidate.divide_value
+			FROM (
+				SELECT u.code, COALESCE(u.stand_value, 0)::float8 AS stand_value,
+				       COALESCE(u.divide_value, 0)::float8 AS divide_value,
+				       0 AS source_priority, COALESCE(u.row_order, 2147483647) AS row_order,
+				       COALESCE(u.line_number, 2147483647) AS line_number
+				FROM public.ic_unit_use u
+				WHERE u.ic_code = sd.ic_code
+				  AND u.code = sd.unit_code
+				  AND COALESCE(u.status, 0) = 0
+				UNION ALL
+				-- Some SML tenants mark ic_unit_use inactive while the same unit remains
+				-- the inventory standard unit. This tenant-generic fallback mirrors the
+				-- stock-catalog contract and never substitutes a different unit code.
+				SELECT TRIM(component.unit_standard),
+				       COALESCE(component.unit_standard_stand_value, 0)::float8,
+				       COALESCE(component.unit_standard_divide_value, 0)::float8,
+				       1, 2147483647, 2147483647
+				WHERE TRIM(COALESCE(component.unit_standard, '')) = TRIM(COALESCE(sd.unit_code, ''))
+			) candidate
+			ORDER BY candidate.source_priority, candidate.row_order, candidate.line_number, candidate.code
 			LIMIT 1
 		) unit_use ON true
 		WHERE sd.ic_set_code = ANY($1::text[])
