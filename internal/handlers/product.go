@@ -3,8 +3,11 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +18,7 @@ import (
 	"sml-api-bybos/internal/db"
 	"sml-api-bybos/internal/middleware"
 	"sml-api-bybos/internal/models"
+	"sml-api-bybos/internal/setproducts"
 )
 
 type ProductHandler struct {
@@ -266,7 +270,8 @@ func (h *ProductHandler) List(c *gin.Context) {
 
 	query := `SELECT i.code, i.name_1, COALESCE(i.name_2,''), i.unit_standard, COALESCE(i.unit_standard_name,''),
 		COALESCE(i.group_main,''), COALESCE(i.balance_qty,0), COALESCE(i.average_cost,0),
-		COALESCE(NULLIF(regexp_replace(COALESCE(pf.price_0,''), '[^0-9\.-]', '', 'g'), ''), '0')::float8 AS price, i.item_status, i.status
+		COALESCE(NULLIF(regexp_replace(COALESCE(pf.price_0,''), '[^0-9\.-]', '', 'g'), ''), '0')::float8 AS price, i.item_status, i.status,
+		COALESCE(i.item_type, 0)::int
 		FROM ic_inventory i
 		LEFT JOIN ic_inventory_price_formula pf
 		  ON pf.ic_code = i.code AND pf.unit_code = i.unit_standard AND pf.sale_type = 0
@@ -285,7 +290,7 @@ func (h *ProductHandler) List(c *gin.Context) {
 	for rows.Next() {
 		var p models.Product
 		if err := rows.Scan(&p.Code, &p.Name1, &p.Name2, &p.UnitStd, &p.UnitStdName,
-			&p.GroupCode, &p.BalanceQty, &p.AverageCost, &p.Price, &p.ItemStatus, &p.Status); err != nil {
+			&p.GroupCode, &p.BalanceQty, &p.AverageCost, &p.Price, &p.ItemStatus, &p.Status, &p.ItemType); err != nil {
 			api.Internal(c, "product_scan_failed", "read product row failed", err.Error())
 			return
 		}
@@ -295,6 +300,10 @@ func (h *ProductHandler) List(c *gin.Context) {
 		products = []models.Product{}
 	}
 	h.attachImageMetadata(ctx, c.GetString(middleware.TenantKey), products)
+	if err := attachProductSetDefinitions(ctx, pool, c.GetString(middleware.TenantKey), products); err != nil {
+		writeSetProductError(c, err)
+		return
+	}
 
 	api.OKPage(c, products, total, page, size)
 }
@@ -319,21 +328,118 @@ func (h *ProductHandler) Get(c *gin.Context) {
 	err = pool.QueryRow(ctx,
 		`SELECT i.code, i.name_1, COALESCE(i.name_2,''), i.unit_standard, COALESCE(i.unit_standard_name,''),
 		COALESCE(i.group_main,''), COALESCE(i.balance_qty,0), COALESCE(i.average_cost,0),
-		COALESCE(NULLIF(regexp_replace(COALESCE(pf.price_0,''), '[^0-9\.-]', '', 'g'), ''), '0')::float8 AS price, i.item_status, i.status
+		COALESCE(NULLIF(regexp_replace(COALESCE(pf.price_0,''), '[^0-9\.-]', '', 'g'), ''), '0')::float8 AS price, i.item_status, i.status,
+		COALESCE(i.item_type, 0)::int
 		FROM ic_inventory i
 		LEFT JOIN ic_inventory_price_formula pf
 		  ON pf.ic_code = i.code AND pf.unit_code = i.unit_standard AND pf.sale_type = 0
 		WHERE i.code = $1`, code).
 		Scan(&p.Code, &p.Name1, &p.Name2, &p.UnitStd, &p.UnitStdName,
-			&p.GroupCode, &p.BalanceQty, &p.AverageCost, &p.Price, &p.ItemStatus, &p.Status)
+			&p.GroupCode, &p.BalanceQty, &p.AverageCost, &p.Price, &p.ItemStatus, &p.Status, &p.ItemType)
 	if err != nil {
 		api.NotFound(c, "product_not_found", "product not found")
 		return
 	}
 	products := []models.Product{p}
 	h.attachImageMetadata(ctx, c.GetString(middleware.TenantKey), products)
+	if err := attachProductSetDefinitions(ctx, pool, c.GetString(middleware.TenantKey), products); err != nil {
+		writeSetProductError(c, err)
+		return
+	}
 	p = products[0]
 	api.OK(c, p)
+}
+
+type productSetBatchRequest struct {
+	ItemCodes []string `json:"item_codes"`
+}
+
+// ProductSetsBatch returns the current SML definition/hash in one query. It is
+// opt-in so existing consumers of the shared service keep their old contract.
+func (h *ProductHandler) ProductSetsBatch(c *gin.Context) {
+	var req productSetBatchRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		api.BadRequest(c, "invalid_set_product_request", "item_codes payload is invalid", nil)
+		return
+	}
+	if len(req.ItemCodes) == 0 || len(req.ItemCodes) > 500 {
+		api.BadRequest(c, "invalid_set_product_request", "item_codes must contain 1-500 entries", nil)
+		return
+	}
+	for _, itemCode := range req.ItemCodes {
+		itemCode = strings.TrimSpace(itemCode)
+		if itemCode == "" || len([]rune(itemCode)) > 255 {
+			api.BadRequest(c, "invalid_set_product_request", "every item_code must contain 1-255 characters", nil)
+			return
+		}
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	pool, err := h.dbm.Get(ctx, c.GetString(middleware.TenantKey))
+	if err != nil {
+		api.Internal(c, "db_pool_error", "connect to SML database failed", err.Error())
+		return
+	}
+	definitions, err := setproducts.LoadDefinitions(ctx, pool, c.GetString(middleware.TenantKey), req.ItemCodes)
+	if err != nil {
+		writeSetProductError(c, err)
+		return
+	}
+	items := make([]setproducts.Definition, 0, len(definitions))
+	for _, definition := range definitions {
+		items = append(items, definition)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ItemCode < items[j].ItemCode })
+	api.OK(c, gin.H{"definitions": items, "capability": "sml_set_products_v1"})
+}
+
+func attachProductSetDefinitions(ctx context.Context, pool setproducts.Queryer, tenant string, products []models.Product) error {
+	setCodes := make([]string, 0)
+	for i := range products {
+		if products[i].ItemType == 3 {
+			setCodes = append(setCodes, products[i].Code)
+		}
+	}
+	if len(setCodes) == 0 {
+		return nil
+	}
+	definitions, err := setproducts.LoadDefinitions(ctx, pool, tenant, setCodes)
+	if err != nil {
+		if errors.Is(err, setproducts.ErrSchemaUnsupported) {
+			for i := range products {
+				if products[i].ItemType != 3 {
+					continue
+				}
+				products[i].SetDefinition = &setproducts.Definition{
+					ItemCode: products[i].Code, WarningCodes: []string{"set_product_schema_unsupported"},
+					Components: []setproducts.Component{},
+				}
+				products[i].SetComponents = []setproducts.Component{}
+			}
+			return nil
+		}
+		return err
+	}
+	for i := range products {
+		definition, ok := definitions[products[i].Code]
+		if !ok {
+			continue
+		}
+		definitionCopy := definition
+		products[i].SetDefinition = &definitionCopy
+		products[i].SetComponents = append([]setproducts.Component(nil), definition.Components...)
+	}
+	return nil
+}
+
+func writeSetProductError(c *gin.Context, err error) {
+	if errors.Is(err, setproducts.ErrSchemaUnsupported) {
+		api.Conflict(c, "set_product_schema_unsupported", "this SML tenant does not support set products", nil)
+		return
+	}
+	api.Internal(c, "set_product_read_failed", "read SML set products failed", err.Error())
 }
 
 func (h *ProductHandler) ListImages(c *gin.Context) {

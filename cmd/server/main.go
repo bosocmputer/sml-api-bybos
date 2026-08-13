@@ -75,6 +75,7 @@ func main() {
 	// Products
 	ph := handlers.NewProductHandler(dbm)
 	v1.GET("/ic/products", ph.List)
+	v1.POST("/ic/product-sets/batch", ph.ProductSetsBatch)
 	v1.GET("/ic/units", ph.ListUnits)
 	v1.GET("/ic/products/:code/units", ph.ListProductUnits)
 	v1.GET("/ic/products/:code/images", ph.ListImages)

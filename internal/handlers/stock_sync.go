@@ -21,6 +21,7 @@ import (
 	"sml-api-bybos/internal/api"
 	"sml-api-bybos/internal/db"
 	"sml-api-bybos/internal/middleware"
+	"sml-api-bybos/internal/setproducts"
 )
 
 const (
@@ -93,7 +94,7 @@ ORDER BY warehouse_code, location_code`
 const stockCatalogCountSQL = `SELECT COUNT(*)
 FROM public.ic_inventory i
 WHERE COALESCE(i.status, 0) = 0
-  AND COALESCE(i.item_type, 0) = 0
+  AND COALESCE(i.item_type, 0) = ANY(@item_types::smallint[])
   AND (@updated_from::timestamptz IS NULL OR COALESCE(i.last_update_date_time, i.create_datetime, i.create_date_time_now) >= @updated_from)
   AND (@updated_to::timestamptz IS NULL OR COALESCE(i.last_update_date_time, i.create_datetime, i.create_date_time_now) <= @updated_to)`
 
@@ -101,13 +102,14 @@ const stockCatalogSQL = `WITH page AS (
 	SELECT
 		i.code,
 		COALESCE(i.name_1, '') AS name_1,
+		COALESCE(i.item_type, 0)::int AS item_type,
 		COALESCE(i.unit_standard, '') AS unit_standard,
 		COALESCE(i.unit_standard_stand_value, 0)::float8 AS standard_stand_value,
 		COALESCE(i.unit_standard_divide_value, 0)::float8 AS standard_divide_value,
 		COALESCE(i.last_update_date_time, i.create_datetime, i.create_date_time_now) AS updated_at
 	FROM public.ic_inventory i
 	WHERE COALESCE(i.status, 0) = 0
-	  AND COALESCE(i.item_type, 0) = 0
+	  AND COALESCE(i.item_type, 0) = ANY(@item_types::smallint[])
 	  AND (@updated_from::timestamptz IS NULL OR COALESCE(i.last_update_date_time, i.create_datetime, i.create_date_time_now) >= @updated_from)
 	  AND (@updated_to::timestamptz IS NULL OR COALESCE(i.last_update_date_time, i.create_datetime, i.create_date_time_now) <= @updated_to)
 	ORDER BY COALESCE(i.last_update_date_time, i.create_datetime, i.create_date_time_now), i.code
@@ -159,6 +161,7 @@ const stockCatalogSQL = `WITH page AS (
 SELECT
 	p.code,
 	p.name_1,
+	p.item_type,
 	p.unit_standard,
 	COALESCE(p.updated_at, TIMESTAMP '1970-01-01'),
 	COALESCE((
@@ -255,12 +258,15 @@ type StockCatalogBarcode struct {
 }
 
 type StockCatalogItem struct {
-	ItemCode     string                `json:"item_code"`
-	ItemName     string                `json:"item_name"`
-	StandardUnit string                `json:"standard_unit"`
-	UpdatedAt    time.Time             `json:"updated_at"`
-	Units        []StockCatalogUnit    `json:"units"`
-	Barcodes     []StockCatalogBarcode `json:"barcodes"`
+	ItemCode      string                  `json:"item_code"`
+	ItemName      string                  `json:"item_name"`
+	ItemType      int                     `json:"item_type"`
+	StandardUnit  string                  `json:"standard_unit"`
+	UpdatedAt     time.Time               `json:"updated_at"`
+	Units         []StockCatalogUnit      `json:"units"`
+	Barcodes      []StockCatalogBarcode   `json:"barcodes"`
+	SetDefinition *setproducts.Definition `json:"set_definition,omitempty"`
+	SetComponents []setproducts.Component `json:"set_components,omitempty"`
 }
 
 type StockLocation struct {
@@ -393,6 +399,11 @@ func (h *StockSyncHandler) Locations(c *gin.Context) {
 
 func (h *StockSyncHandler) Catalog(c *gin.Context) {
 	page, size := stockCatalogPageParams(c)
+	includeSets, err := strconv.ParseBool(c.DefaultQuery("include_sets", "false"))
+	if err != nil {
+		api.BadRequest(c, "invalid_include_sets", "include_sets must be true or false", nil)
+		return
+	}
 	updatedFrom, err := parseOptionalTime(c.Query("updated_from"))
 	if err != nil {
 		api.BadRequest(c, "invalid_updated_from", "updated_from must be RFC3339 or YYYY-MM-DD", nil)
@@ -414,7 +425,11 @@ func (h *StockSyncHandler) Catalog(c *gin.Context) {
 		api.Internal(c, "db_pool_error", "connect to SML database failed", err.Error())
 		return
 	}
-	args := pgx.NamedArgs{"updated_from": updatedFrom, "updated_to": updatedTo, "size": size, "offset": (page - 1) * size}
+	itemTypes := []int16{0}
+	if includeSets {
+		itemTypes = append(itemTypes, 3)
+	}
+	args := pgx.NamedArgs{"updated_from": updatedFrom, "updated_to": updatedTo, "item_types": itemTypes, "size": size, "offset": (page - 1) * size}
 	var total int
 	if err := pool.QueryRow(ctx, stockCatalogCountSQL, args).Scan(&total); err != nil {
 		api.Internal(c, "stock_catalog_count_failed", "count stock catalog failed", err.Error())
@@ -430,7 +445,7 @@ func (h *StockSyncHandler) Catalog(c *gin.Context) {
 	for rows.Next() {
 		var item StockCatalogItem
 		var unitsJSON, barcodesJSON []byte
-		if err := rows.Scan(&item.ItemCode, &item.ItemName, &item.StandardUnit, &item.UpdatedAt, &unitsJSON, &barcodesJSON); err != nil {
+		if err := rows.Scan(&item.ItemCode, &item.ItemName, &item.ItemType, &item.StandardUnit, &item.UpdatedAt, &unitsJSON, &barcodesJSON); err != nil {
 			api.Internal(c, "stock_catalog_scan_failed", "read stock catalog failed", err.Error())
 			return
 		}
@@ -447,6 +462,28 @@ func (h *StockSyncHandler) Catalog(c *gin.Context) {
 	if err := rows.Err(); err != nil {
 		api.Internal(c, "stock_catalog_failed", "list stock catalog failed", err.Error())
 		return
+	}
+	if includeSets {
+		setCodes := make([]string, 0)
+		for i := range items {
+			if items[i].ItemType == 3 {
+				setCodes = append(setCodes, items[i].ItemCode)
+			}
+		}
+		definitions, err := setproducts.LoadDefinitions(ctx, pool, c.GetString(middleware.TenantKey), setCodes)
+		if err != nil {
+			writeSetProductError(c, err)
+			return
+		}
+		for i := range items {
+			definition, ok := definitions[items[i].ItemCode]
+			if !ok {
+				continue
+			}
+			definitionCopy := definition
+			items[i].SetDefinition = &definitionCopy
+			items[i].SetComponents = append([]setproducts.Component(nil), definition.Components...)
+		}
 	}
 	api.OKPage(c, items, total, page, size)
 }

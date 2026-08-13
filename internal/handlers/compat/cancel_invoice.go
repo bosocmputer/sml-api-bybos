@@ -101,6 +101,13 @@ type saleInvoiceCancelLine struct {
 	SumAmountExclVAT float64
 	TaxType          int
 	VATType          int
+	ItemType         int
+	RefGUID          string
+	SetRefPrice      float64
+	SetRefQty        float64
+	ItemCodeMain     string
+	SetRefLine       string
+	PriceSetRatio    float64
 }
 
 func (h *WriteHandler) PreviewSaleInvoiceCancel(c *gin.Context) {
@@ -174,6 +181,9 @@ func previewSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo st
 		return saleInvoiceCancelPreview{}, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
+		return saleInvoiceCancelPreview{}, fmt.Errorf("set repeatable-read isolation: %w", err)
+	}
 	return buildSaleInvoiceCancelPreview(ctx, tx, saleDocNo, req, false)
 }
 
@@ -183,6 +193,9 @@ func createSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo str
 		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
+		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("set repeatable-read isolation: %w", err)
+	}
 
 	req.DocNo = strings.TrimSpace(req.DocNo)
 	if req.DocNo == "" {
@@ -239,7 +252,26 @@ func createSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo str
 		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("insert credit note header: %w", err)
 	}
 	rowsWritten := 1
+	refGUIDs := make(map[string]string)
 	for _, it := range src.Items {
+		if it.ItemType != 3 || strings.TrimSpace(it.RefGUID) == "" {
+			continue
+		}
+		guid, err := newRefGUID()
+		if err != nil {
+			return saleInvoiceCancelPreview{}, rowsWritten, fmt.Errorf("generate credit note set ref_guid: %w", err)
+		}
+		refGUIDs[it.RefGUID] = guid
+	}
+	for _, it := range src.Items {
+		refGUID := ""
+		setRefLine := it.SetRefLine
+		if it.ItemType == 3 {
+			refGUID = refGUIDs[it.RefGUID]
+		}
+		if replacement, ok := refGUIDs[it.SetRefLine]; ok {
+			setRefLine = replacement
+		}
 		_, err = tx.Exec(ctx, `
 			INSERT INTO ic_trans_detail (
 				trans_type, trans_flag, doc_date, doc_no, line_number,
@@ -251,7 +283,10 @@ func createSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo str
 				sum_amount, sum_amount_exclude_vat,
 				tax_type, vat_type,
 				ref_doc_no, ref_line_number, doc_ref_type,
-				branch_code, last_status
+				branch_code,
+				item_type, ref_guid, set_ref_price, set_ref_qty,
+				item_code_main, set_ref_line, price_set_ratio,
+				last_status
 			) VALUES (
 				$1,$2,$3,$4,$5,
 				$6,$7,-1,$8,
@@ -262,7 +297,10 @@ func createSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo str
 				$24,$25,
 				$26,$27,
 				$28,$29,1,
-				$30,0
+				$30,
+				$31,$32,$33,$34,
+				$35,$36,$37,
+				0
 			)`,
 			models.TransTypeSale, models.TransFlagCreditNote, docDate, req.DocNo, it.LineNumber,
 			src.CustCode, docTime, src.InquiryType,
@@ -274,6 +312,8 @@ func createSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo str
 			it.TaxType, firstNonZero(it.VATType, src.VATType),
 			src.DocNo, it.LineNumber,
 			src.BranchCode,
+			it.ItemType, refGUID, it.SetRefPrice, it.SetRefQty,
+			it.ItemCodeMain, setRefLine, it.PriceSetRatio,
 		)
 		if err != nil {
 			return saleInvoiceCancelPreview{}, rowsWritten, fmt.Errorf("insert credit note item %d: %w", it.LineNumber, err)
@@ -419,7 +459,11 @@ func loadSaleInvoiceForCancel(ctx context.Context, tx pgx.Tx, saleDocNo string, 
 		       COALESCE(discount_amount,0)::float8, COALESCE(discount,''),
 		       COALESCE(total_vat_value,0)::float8,
 		       COALESCE(sum_amount,0)::float8, COALESCE(sum_amount_exclude_vat,0)::float8,
-		       COALESCE(tax_type,0), COALESCE(vat_type,0)
+		       COALESCE(tax_type,0), COALESCE(vat_type,0),
+		       COALESCE(item_type,0)::int, COALESCE(ref_guid,''),
+		       COALESCE(set_ref_price,0)::float8, COALESCE(set_ref_qty,0)::float8,
+		       COALESCE(item_code_main,''), COALESCE(set_ref_line,''),
+		       COALESCE(price_set_ratio,0)::float8
 		  FROM ic_trans_detail
 		 WHERE doc_no=$1 AND trans_flag=$2 AND COALESCE(last_status,0)=0
 		 ORDER BY COALESCE(line_number,0)`, saleDocNo, models.TransFlagSaleInvoice)
@@ -438,6 +482,8 @@ func loadSaleInvoiceForCancel(ctx context.Context, tx pgx.Tx, saleDocNo string, 
 			&it.TotalVATValue,
 			&it.SumAmount, &it.SumAmountExclVAT,
 			&it.TaxType, &it.VATType,
+			&it.ItemType, &it.RefGUID, &it.SetRefPrice, &it.SetRefQty,
+			&it.ItemCodeMain, &it.SetRefLine, &it.PriceSetRatio,
 		); err != nil {
 			return saleInvoiceForCancel{}, fmt.Errorf("scan source detail: %w", err)
 		}

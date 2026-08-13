@@ -2,9 +2,12 @@ package compat
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +20,7 @@ import (
 	"sml-api-bybos/internal/db"
 	"sml-api-bybos/internal/middleware"
 	"sml-api-bybos/internal/models"
+	"sml-api-bybos/internal/setproducts"
 )
 
 type WriteHandler struct {
@@ -108,6 +112,7 @@ type docPayload struct {
 	Remark2        string    `json:"remark_2"`
 	Remark5        string    `json:"remark_5"`
 	UserRequest    string    `json:"user_request"`
+	ExpandSetItems bool      `json:"expand_set_items"`
 	Items          []docItem `json:"items"`
 	Details        []docItem `json:"details"`
 }
@@ -296,7 +301,7 @@ func (h *WriteHandler) createDocument(c *gin.Context, route docRoute) {
 		return
 	}
 
-	rows, existing, err := h.insertDocument(ctx, pool, p, items, route)
+	rows, existing, err := h.insertDocument(ctx, pool, c.GetString(middleware.TenantKey), p, items, route)
 	if err != nil {
 		var ae *appError
 		if errors.As(err, &ae) {
@@ -360,6 +365,20 @@ func normalizeAndValidate(p *docPayload, items []docItem, route docRoute) error 
 	if p.VATType < 0 || p.VATType > 2 {
 		return fmt.Errorf("vat_type must be 0, 1, or 2")
 	}
+	headerMoney := []struct {
+		name  string
+		value float64
+	}{
+		{"total_value", p.TotalValue}, {"total_discount", p.TotalDiscount},
+		{"total_before_vat", p.TotalBeforeVAT}, {"total_vat_value", p.TotalVATValue},
+		{"total_except_vat", p.TotalExceptVAT}, {"total_after_vat", p.TotalAfterVAT},
+		{"total_amount", p.TotalAmount},
+	}
+	for _, field := range headerMoney {
+		if !validDocumentMoney(field.value) {
+			return fmt.Errorf("%s is outside the supported money range", field.name)
+		}
+	}
 	if len(items) == 0 {
 		return fmt.Errorf("%s must contain at least one item", route.itemKey)
 	}
@@ -370,14 +389,32 @@ func normalizeAndValidate(p *docPayload, items []docItem, route docRoute) error 
 		if strings.TrimSpace(items[i].UnitCode) == "" {
 			return fmt.Errorf("item %d unit_code is required", i)
 		}
-		if items[i].Qty <= 0 {
+		if items[i].Qty <= 0 || math.IsNaN(items[i].Qty) || math.IsInf(items[i].Qty, 0) {
 			return fmt.Errorf("item %d qty must be > 0", i)
 		}
-		if items[i].Price < 0 {
+		if items[i].Price < 0 || math.IsNaN(items[i].Price) || math.IsInf(items[i].Price, 0) {
 			return fmt.Errorf("item %d price must be >= 0", i)
+		}
+		itemMoney := []float64{
+			items[i].Price, items[i].PriceExcludeVAT, items[i].DiscountAmount,
+			items[i].VATAmount, items[i].TotalVATValue, items[i].SumAmount,
+			items[i].SumAmountExclVAT,
+		}
+		for _, value := range itemMoney {
+			if !validDocumentMoney(value) {
+				return fmt.Errorf("item %d contains a value outside the supported money range", i)
+			}
+		}
+		if !validDocumentMoney(items[i].Qty * items[i].Price) {
+			return fmt.Errorf("item %d quantity multiplied by price is outside the supported money range", i)
 		}
 	}
 	return nil
+}
+
+func validDocumentMoney(value float64) bool {
+	const maxAbsoluteMoney = 9_000_000_000_000_000.0
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && math.Abs(value) <= maxAbsoluteMoney
 }
 
 type erpLogPool interface {
@@ -501,21 +538,47 @@ func erpLogWarningMessage(logDB string, err error) string {
 	}
 }
 
-func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, p docPayload, items []docItem, route docRoute) (int, bool, error) {
+type preparedDocItem struct {
+	docItem
+	ItemType      int
+	RefGUID       string
+	SetRefPrice   float64
+	SetRefQty     float64
+	ItemCodeMain  string
+	SetRefLine    string
+	PriceSetRatio float64
+}
+
+func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tenant string, p docPayload, items []docItem, route docRoute) (int, bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return 0, false, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
+		return 0, false, fmt.Errorf("set repeatable-read isolation: %w", err)
+	}
 
 	exists, err := docExists(ctx, tx, p.DocNo, route.transFlag)
 	if err != nil {
 		return 0, false, err
 	}
 	if exists {
+		matches, err := existingDocumentMatches(ctx, tx, p, items, route)
+		if err != nil {
+			return 0, false, err
+		}
+		if !matches {
+			return 0, false, newAppError(http.StatusConflict, "doc_no_payload_mismatch", "doc_no already exists with a different customer, item, quantity, or total", gin.H{"doc_no": p.DocNo})
+		}
 		return 0, true, nil
 	}
-	if err := validateRefs(ctx, tx, p, items, route); err != nil {
+	products, err := validateRefs(ctx, tx, tenant, p, items, route)
+	if err != nil {
+		return 0, false, err
+	}
+	preparedItems, err := prepareDocumentItems(p, items, route, products)
+	if err != nil {
 		return 0, false, err
 	}
 
@@ -557,15 +620,20 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, p do
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
-			return 0, false, newAppError(http.StatusConflict, "duplicate_doc_no", fmt.Sprintf("doc_no '%s' already exists", p.DocNo), nil)
+			// A concurrent request may have committed the same document after this
+			// repeatable-read transaction took its snapshot. Start a fresh
+			// transaction before comparing so an identical retry is idempotent.
+			_ = tx.Rollback(ctx)
+			return compareDocumentAfterUniqueConflict(ctx, pool, p, items, route)
 		}
 		return 0, false, fmt.Errorf("insert header: %w", err)
 	}
 	rowsWritten := 1
 
-	for i, it := range items {
+	for i, prepared := range preparedItems {
+		it := prepared.docItem
 		lineNo := it.LineNumber
-		if lineNo == 0 {
+		if p.ExpandSetItems || lineNo == 0 {
 			lineNo = i
 		}
 		wh := firstNonEmpty(it.WHCode, p.WHCode)
@@ -610,7 +678,10 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, p do
 				discount_amount, discount, total_vat_value,
 				sum_amount, sum_amount_exclude_vat,
 				tax_type, vat_type,
-				doc_ref, branch_code, last_status
+				doc_ref, branch_code,
+				item_type, ref_guid, set_ref_price, set_ref_qty,
+				item_code_main, set_ref_line, price_set_ratio,
+				last_status
 			) VALUES (
 				$1,$2,$3,$4,$5,
 				$6,$7,$8,$9,
@@ -620,7 +691,10 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, p do
 				$22,$23,$24,
 				$25,$26,
 				$27,$28,
-				$29,$30,0
+				$29,$30,
+				$31,$32,$33,$34,
+				$35,$36,$37,
+				0
 			)`,
 			route.transType, route.transFlag, docDate, p.DocNo, lineNo,
 			p.CustCode, p.DocTime, calcFlag, p.InquiryType,
@@ -631,6 +705,8 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, p do
 			sumAmount, sumExc,
 			it.TaxType, p.VATType,
 			docRef, p.BranchCode,
+			prepared.ItemType, prepared.RefGUID, prepared.SetRefPrice, prepared.SetRefQty,
+			prepared.ItemCodeMain, prepared.SetRefLine, prepared.PriceSetRatio,
 		)
 		if err != nil {
 			return rowsWritten, false, fmt.Errorf("insert item %d: %w", i, err)
@@ -644,7 +720,271 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, p do
 	if err := tx.Commit(ctx); err != nil {
 		return rowsWritten, false, fmt.Errorf("commit: %w", err)
 	}
+	h.logSetExpansion(tenant, p.DocNo, items, products)
 	return rowsWritten, false, nil
+}
+
+func (h *WriteHandler) logSetExpansion(tenant, docNo string, items []docItem, products map[string]setproducts.Product) {
+	if h == nil || h.log == nil {
+		return
+	}
+	setCount := 0
+	hashSet := map[string]struct{}{}
+	for _, item := range items {
+		product := products[strings.TrimSpace(item.ItemCode)]
+		if product.ItemType != 3 {
+			continue
+		}
+		setCount++
+		if product.Definition != nil && strings.TrimSpace(product.Definition.Hash) != "" {
+			hashSet[product.Definition.Hash] = struct{}{}
+		}
+	}
+	if setCount == 0 {
+		return
+	}
+	hashes := make([]string, 0, len(hashSet))
+	for hash := range hashSet {
+		hashes = append(hashes, hash)
+	}
+	sort.Strings(hashes)
+	h.log.Info("sml_set_product_expansion",
+		zap.String("tenant", tenant),
+		zap.String("doc_no", docNo),
+		zap.Int("set_count", setCount),
+		zap.Strings("definition_hashes", hashes),
+	)
+}
+
+func compareDocumentAfterUniqueConflict(ctx context.Context, pool txBeginner, p docPayload, items []docItem, route docRoute) (int, bool, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return 0, false, fmt.Errorf("begin duplicate comparison tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	exists, err := docExists(ctx, tx, p.DocNo, route.transFlag)
+	if err != nil {
+		return 0, false, fmt.Errorf("reload duplicate document: %w", err)
+	}
+	if !exists {
+		return 0, false, newAppError(http.StatusConflict, "duplicate_doc_no", fmt.Sprintf("doc_no '%s' already exists", p.DocNo), nil)
+	}
+	matches, err := existingDocumentMatches(ctx, tx, p, items, route)
+	if err != nil {
+		return 0, false, err
+	}
+	if !matches {
+		return 0, false, newAppError(http.StatusConflict, "doc_no_payload_mismatch", "doc_no already exists with a different customer, item, quantity, or total", gin.H{"doc_no": p.DocNo})
+	}
+	return 0, true, nil
+}
+
+func prepareDocumentItems(p docPayload, items []docItem, route docRoute, products map[string]setproducts.Product) ([]preparedDocItem, error) {
+	prepared := make([]preparedDocItem, 0, len(items))
+	hasSet := false
+	var parentTotal, parentVAT, parentExclude, parentDiscount int64
+	for _, raw := range items {
+		item := normalizeDocItem(raw)
+		product := products[strings.TrimSpace(item.ItemCode)]
+		parentTotal += setproducts.MoneyToCents(item.SumAmount)
+		parentVAT += setproducts.MoneyToCents(item.TotalVATValue)
+		parentExclude += setproducts.MoneyToCents(item.SumAmountExclVAT)
+		parentDiscount += setproducts.MoneyToCents(item.DiscountAmount)
+		if product.ItemType == 3 && !p.ExpandSetItems {
+			return nil, newAppError(http.StatusConflict, "set_product_expansion_disabled", "set product expansion must be enabled before creating a document with set products", gin.H{"item_code": item.ItemCode})
+		}
+		if product.ItemType != 3 {
+			prepared = append(prepared, preparedDocItem{docItem: item})
+			continue
+		}
+		hasSet = true
+		if route != routeSaleOrder && route != routeSaleInvoice {
+			return nil, newAppError(http.StatusBadRequest, "set_expansion_route_unsupported", "set products can be expanded only for sale orders and sale invoices", gin.H{"item_code": item.ItemCode})
+		}
+		if product.Definition == nil || !product.Definition.DocumentValid {
+			warnings := []string{"set_definition_missing"}
+			if product.Definition != nil {
+				warnings = product.Definition.WarningCodes
+			}
+			return nil, newAppError(http.StatusConflict, "set_definition_invalid", "set product definition must be fixed in SML before creating the document", gin.H{"item_code": item.ItemCode, "warning_codes": warnings})
+		}
+		guid, err := newRefGUID()
+		if err != nil {
+			return nil, fmt.Errorf("generate set parent ref_guid: %w", err)
+		}
+		prepared = append(prepared, preparedDocItem{
+			docItem: item, ItemType: 3, RefGUID: guid, SetRefPrice: round6(item.Price),
+		})
+		definition := product.Definition
+		sumAlloc, err := setproducts.AllocateCents(setproducts.MoneyToCents(item.SumAmount), definition.Components)
+		if err != nil {
+			return nil, newAppError(http.StatusConflict, "set_allocation_invalid", "set product price weights are invalid", gin.H{"item_code": item.ItemCode})
+		}
+		excludeAlloc, err := setproducts.AllocateCents(setproducts.MoneyToCents(item.SumAmountExclVAT), definition.Components)
+		if err != nil {
+			return nil, newAppError(http.StatusConflict, "set_allocation_invalid", "set product pre-VAT allocation is invalid", gin.H{"item_code": item.ItemCode})
+		}
+		vatAlloc, err := setproducts.AllocateCents(setproducts.MoneyToCents(item.TotalVATValue), definition.Components)
+		if err != nil {
+			return nil, newAppError(http.StatusConflict, "set_allocation_invalid", "set product VAT allocation is invalid", gin.H{"item_code": item.ItemCode})
+		}
+		discountAlloc, err := setproducts.AllocateCents(setproducts.MoneyToCents(item.DiscountAmount), definition.Components)
+		if err != nil {
+			return nil, newAppError(http.StatusConflict, "set_allocation_invalid", "set product discount allocation is invalid", gin.H{"item_code": item.ItemCode})
+		}
+		for componentIndex, component := range definition.Components {
+			childQty := item.Qty * component.Qty
+			if childQty <= 0 {
+				return nil, newAppError(http.StatusConflict, "set_component_qty_invalid", "set component quantity must be greater than zero", gin.H{"item_code": item.ItemCode, "component_code": component.ItemCode})
+			}
+			childSum := setproducts.CentsToMoney(sumAlloc[componentIndex])
+			childExclude := setproducts.CentsToMoney(excludeAlloc[componentIndex])
+			childVAT := setproducts.CentsToMoney(vatAlloc[componentIndex])
+			childDiscount := setproducts.CentsToMoney(discountAlloc[componentIndex])
+			childPrice := round6(childSum / childQty)
+			childPriceExclude := round6(childExclude / childQty)
+			child := docItem{
+				DocRef: item.DocRef, ItemCode: component.ItemCode, ItemName: component.ItemName,
+				IsGetPrice: 1, UnitCode: component.UnitCode,
+				WHCode: item.WHCode, ShelfCode: item.ShelfCode, WHCode2: item.WHCode2, ShelfCode2: item.ShelfCode2,
+				Qty: childQty, Price: childPrice, PriceExcludeVAT: childPriceExclude,
+				DiscountAmount: childDiscount, SumAmount: childSum,
+				VATAmount: childVAT, TotalVATValue: childVAT,
+				TaxType: item.TaxType, VATType: item.VATType, SumAmountExclVAT: childExclude,
+			}
+			prepared = append(prepared, preparedDocItem{
+				docItem: child, ItemType: component.ItemType,
+				SetRefPrice: childPrice, SetRefQty: component.Qty,
+				ItemCodeMain: item.ItemCode, SetRefLine: guid, PriceSetRatio: component.PriceRatio,
+			})
+		}
+	}
+	if hasSet {
+		expectedAfterVAT := parentTotal
+		if p.VATType == 0 {
+			expectedAfterVAT += parentVAT
+		}
+		if absCents(parentTotal-setproducts.MoneyToCents(p.TotalValue)) > 1 ||
+			absCents(parentVAT-setproducts.MoneyToCents(p.TotalVATValue)) > 1 ||
+			absCents(parentExclude-setproducts.MoneyToCents(p.TotalBeforeVAT)) > 1 ||
+			absCents(parentDiscount-setproducts.MoneyToCents(p.TotalDiscount)) > 1 ||
+			absCents(expectedAfterVAT-setproducts.MoneyToCents(p.TotalAfterVAT)) > 1 ||
+			absCents(expectedAfterVAT-setproducts.MoneyToCents(p.TotalAmount)) > 1 {
+			return nil, newAppError(http.StatusConflict, "document_total_mismatch", "document header totals do not match marketplace parent lines", gin.H{
+				"parent_total": setproducts.CentsToMoney(parentTotal), "header_total_value": p.TotalValue,
+				"parent_vat": setproducts.CentsToMoney(parentVAT), "header_vat": p.TotalVATValue,
+				"expected_total_amount": setproducts.CentsToMoney(expectedAfterVAT), "header_total_amount": p.TotalAmount,
+			})
+		}
+	}
+	for i := range prepared {
+		prepared[i].LineNumber = i
+	}
+	return prepared, nil
+}
+
+func normalizeDocItem(item docItem) docItem {
+	if item.TotalVATValue == 0 {
+		item.TotalVATValue = item.VATAmount
+	}
+	if item.SumAmount == 0 {
+		item.SumAmount = round2(item.Qty * item.Price)
+	}
+	if item.SumAmountExclVAT == 0 {
+		item.SumAmountExclVAT = item.SumAmount
+	}
+	if item.PriceExcludeVAT == 0 {
+		item.PriceExcludeVAT = item.Price
+	}
+	return item
+}
+
+func existingDocumentMatches(ctx context.Context, tx pgx.Tx, p docPayload, items []docItem, route docRoute) (bool, error) {
+	var custCode string
+	var totalValue, totalVAT, totalAmount float64
+	err := tx.QueryRow(ctx, `SELECT COALESCE(cust_code,''), COALESCE(total_value,0)::float8,
+		COALESCE(total_vat_value,0)::float8, COALESCE(total_amount,0)::float8
+		FROM ic_trans WHERE doc_no=$1 AND trans_flag=$2 AND COALESCE(last_status,0)=0
+		FOR UPDATE`, p.DocNo, route.transFlag).Scan(&custCode, &totalValue, &totalVAT, &totalAmount)
+	if err != nil {
+		return false, fmt.Errorf("load existing document header: %w", err)
+	}
+	if strings.TrimSpace(custCode) != p.CustCode ||
+		absCents(setproducts.MoneyToCents(totalValue)-setproducts.MoneyToCents(p.TotalValue)) > 1 ||
+		absCents(setproducts.MoneyToCents(totalVAT)-setproducts.MoneyToCents(p.TotalVATValue)) > 1 ||
+		absCents(setproducts.MoneyToCents(totalAmount)-setproducts.MoneyToCents(p.TotalAmount)) > 1 {
+		return false, nil
+	}
+	rows, err := tx.Query(ctx, `SELECT COALESCE(item_code,''), COALESCE(qty,0)::float8,
+		COALESCE(sum_amount,0)::float8, COALESCE(item_type,0)::int,
+		COALESCE(item_code_main,''), COALESCE(set_ref_line,''), COALESCE(ref_guid,'')
+		FROM ic_trans_detail
+		WHERE doc_no=$1 AND trans_flag=$2 AND COALESCE(last_status,0)=0
+		ORDER BY COALESCE(line_number,0)`, p.DocNo, route.transFlag)
+	if err != nil {
+		return false, fmt.Errorf("load existing document details: %w", err)
+	}
+	defer rows.Close()
+	type existingLine struct {
+		code, mainCode, setRefLine, refGUID string
+		qty, sum                            float64
+		itemType                            int
+	}
+	parents := make([]existingLine, 0)
+	childCountByRef := map[string]int{}
+	for rows.Next() {
+		var line existingLine
+		if err := rows.Scan(&line.code, &line.qty, &line.sum, &line.itemType, &line.mainCode, &line.setRefLine, &line.refGUID); err != nil {
+			return false, fmt.Errorf("scan existing document detail: %w", err)
+		}
+		if strings.TrimSpace(line.mainCode) == "" {
+			parents = append(parents, line)
+		} else {
+			childCountByRef[line.setRefLine]++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if len(parents) != len(items) {
+		return false, nil
+	}
+	for i, raw := range items {
+		item := normalizeDocItem(raw)
+		if strings.TrimSpace(parents[i].code) != strings.TrimSpace(item.ItemCode) ||
+			math.Abs(parents[i].qty-item.Qty) > 0.000001 ||
+			absCents(setproducts.MoneyToCents(parents[i].sum)-setproducts.MoneyToCents(item.SumAmount)) > 1 {
+			return false, nil
+		}
+		if p.ExpandSetItems && !existingSetParentHasChildren(parents[i].itemType, parents[i].refGUID, childCountByRef) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func existingSetParentHasChildren(itemType int, refGUID string, childCountByRef map[string]int) bool {
+	return itemType != 3 || (strings.TrimSpace(refGUID) != "" && childCountByRef[refGUID] > 0)
+}
+
+func newRefGUID() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	value[6] = (value[6] & 0x0f) | 0x40
+	value[8] = (value[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		value[0:4], value[4:6], value[6:8], value[8:10], value[10:16]), nil
+}
+
+func round6(value float64) float64 { return math.Round(value*1_000_000) / 1_000_000 }
+func absCents(value int64) int64 {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func updatePurchaseOrderCreditor(ctx context.Context, pool txBeginner, docNo string, p updateCreditorPayload) (updateCreditorResult, error) {
@@ -821,57 +1161,82 @@ func docExists(ctx context.Context, tx pgx.Tx, docNo string, transFlag int) (boo
 	return exists, err
 }
 
-func validateRefs(ctx context.Context, tx pgx.Tx, p docPayload, items []docItem, route docRoute) error {
+func validateRefs(ctx context.Context, tx pgx.Tx, tenant string, p docPayload, items []docItem, route docRoute) (map[string]setproducts.Product, error) {
 	partyTable := "ar_customer"
 	if route.partyKind == "supplier" {
 		partyTable = "ap_supplier"
 	}
 	var ok bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+partyTable+` WHERE code=$1 AND status=0)`, p.CustCode).Scan(&ok); err != nil {
-		return fmt.Errorf("validate party: %w", err)
+		return nil, fmt.Errorf("validate party: %w", err)
 	}
 	if !ok {
-		return newAppError(http.StatusBadRequest, route.partyKind+"_not_found", route.partyKind+" not found: "+p.CustCode, nil)
+		return nil, newAppError(http.StatusBadRequest, route.partyKind+"_not_found", route.partyKind+" not found: "+p.CustCode, nil)
 	}
 
 	if p.WHCode != "" {
 		if err := tx.QueryRow(ctx, warehouseExistsSQL(), p.WHCode).Scan(&ok); err != nil {
-			return fmt.Errorf("validate warehouse: %w", err)
+			return nil, fmt.Errorf("validate warehouse: %w", err)
 		}
 		if !ok {
-			return newAppError(http.StatusBadRequest, "warehouse_not_found", "warehouse not found: "+p.WHCode, nil)
+			return nil, newAppError(http.StatusBadRequest, "warehouse_not_found", "warehouse not found: "+p.WHCode, nil)
 		}
 	}
 	if p.WHCode != "" && p.ShelfCode != "" {
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM ic_shelf WHERE whcode=$1 AND code=$2 AND COALESCE(status,0)=0)`, p.WHCode, p.ShelfCode).Scan(&ok); err != nil {
-			return fmt.Errorf("validate shelf: %w", err)
+			return nil, fmt.Errorf("validate shelf: %w", err)
 		}
 		if !ok {
-			return newAppError(http.StatusBadRequest, "shelf_not_found", fmt.Sprintf("shelf %s not found under warehouse %s", p.ShelfCode, p.WHCode), nil)
+			return nil, newAppError(http.StatusBadRequest, "shelf_not_found", fmt.Sprintf("shelf %s not found under warehouse %s", p.ShelfCode, p.WHCode), nil)
 		}
 	}
-
+	itemCodes := make([]string, 0, len(items))
+	for _, item := range items {
+		itemCodes = append(itemCodes, item.ItemCode)
+	}
+	products, err := setproducts.LoadProducts(ctx, tx, tenant, itemCodes, p.ExpandSetItems)
+	if err != nil {
+		if errors.Is(err, setproducts.ErrSchemaUnsupported) {
+			return nil, newAppError(http.StatusConflict, "set_product_schema_unsupported", "this SML tenant does not support set-product expansion", nil)
+		}
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT TRIM(ic_code), TRIM(code)
+		FROM ic_unit_use
+		WHERE ic_code = ANY($1::text[]) AND COALESCE(status,0)=0
+		UNION
+		SELECT TRIM(code), TRIM(COALESCE(unit_standard,''))
+		FROM ic_inventory
+		WHERE code = ANY($1::text[]) AND TRIM(COALESCE(unit_standard,'')) <> ''`, itemCodes)
+	if err != nil {
+		return nil, fmt.Errorf("load product units: %w", err)
+	}
+	unitPairs := map[string]struct{}{}
+	for rows.Next() {
+		var itemCode, unitCode string
+		if err := rows.Scan(&itemCode, &unitCode); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan product unit: %w", err)
+		}
+		unitPairs[itemCode+"\x00"+unitCode] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("load product units: %w", err)
+	}
+	rows.Close()
 	for i, it := range items {
 		itemCode := strings.TrimSpace(it.ItemCode)
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM ic_inventory WHERE code=$1 AND status=0)`, itemCode).Scan(&ok); err != nil {
-			return fmt.Errorf("validate product %s: %w", itemCode, err)
-		}
-		if !ok {
-			return newAppError(http.StatusBadRequest, "product_not_found", fmt.Sprintf("item %d product not found: %s", i, itemCode), nil)
+		product, found := products[itemCode]
+		if !found || !product.Active {
+			return nil, newAppError(http.StatusBadRequest, "product_not_found", fmt.Sprintf("item %d product not found: %s", i, itemCode), nil)
 		}
 		unitCode := strings.TrimSpace(it.UnitCode)
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(
-			SELECT 1 FROM ic_unit_use WHERE ic_code=$1 AND code=$2
-			UNION
-			SELECT 1 FROM ic_inventory WHERE code=$1 AND unit_standard=$2
-		)`, itemCode, unitCode).Scan(&ok); err != nil {
-			return fmt.Errorf("validate unit %s/%s: %w", itemCode, unitCode, err)
-		}
-		if !ok {
-			return newAppError(http.StatusBadRequest, "unit_not_found", fmt.Sprintf("item %d unit %s not found for product %s", i, unitCode, itemCode), nil)
+		if _, found := unitPairs[itemCode+"\x00"+unitCode]; !found {
+			return nil, newAppError(http.StatusBadRequest, "unit_not_found", fmt.Sprintf("item %d unit %s not found for product %s", i, unitCode, itemCode), nil)
 		}
 	}
-	return nil
+	return products, nil
 }
 
 func warehouseExistsSQL() string {

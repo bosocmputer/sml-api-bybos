@@ -236,16 +236,25 @@ http://localhost:8200/openapi.json
 | `GET` | `/api/v1/ic/products/:code/images/:roworder` | ไฟล์รูปสินค้า binary |
 | `GET` | `/api/v1/ic/units` | รายการหน่วยสินค้า active |
 | `POST` | `/api/v1/ic/products` | สร้างสินค้าใหม่ใน SML |
+| `POST` | `/api/v1/ic/product-sets/batch` | อ่าน definition/hash สินค้าชุดหลายรหัสแบบ parameterized และ read-only |
+
+Set-product fields เป็น contract กลางแบบ tenant-generic และเป็น opt-in เพื่อไม่ให้
+กระทบ consumer เดิมของ shared service. `item_type=3` ใช้
+`ic_inventory_set_detail` เป็น source of truth; service ไม่แก้ master ของ SML.
 
 ### Sale Orders / Invoices / Purchase Orders
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/v1/ic/sale-orders` | สร้างใบสั่งขาย (sale order) |
-| `POST` | `/api/v1/ic/sale-invoices` | สร้างใบกำกับภาษี (sale invoice) |
+| `POST` | `/api/v1/ic/sale-orders` | สร้างใบสั่งขาย (sale order); `expand_set_items=true` เพื่อเขียน parent/child สินค้าชุด |
+| `POST` | `/api/v1/ic/sale-invoices` | สร้างใบกำกับภาษี (sale invoice); `expand_set_items=true` เพื่อเขียน parent/child สินค้าชุด |
 | `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel/preview` | Preview ใบลดหนี้ (credit note) ที่จะสร้างจากใบกำกับภาษีเดิม โดยไม่เขียนข้อมูล |
 | `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel` | สร้างใบลดหนี้ยกเลิกใบกำกับภาษี (`trans_flag` credit note); idempotent ถ้ามีใบลดหนี้อยู่แล้วจะคืน `status=already_exists` |
 | `POST` | `/api/v1/ic/purchase-orders` | สร้างใบสั่งซื้อ (purchase order) |
+
+เมื่อใช้ `expand_set_items=true` ผู้เรียกต้องส่งยอด header และยอด parent
+(`sum_amount`, ก่อน VAT, VAT, ส่วนลด) ให้ครบและตรงกันภายใน 0.01 บาท
+ระบบจึงจะแบ่งยอดระดับสตางค์ให้ component และ commit เอกสารทั้งใบพร้อมกัน.
 | `PATCH` | `/api/v1/ic/purchase-orders/:doc_no/creditor` | แก้เจ้าหนี้ของใบสั่งซื้อเดิม โดยอัปเดต `ic_trans.cust_code` และ `ic_trans_detail.cust_code` |
 | `PATCH` | `/api/v1/ic/purchase-orders/:doc_no/doc-ref` | แก้ `doc_ref` ของใบสั่งซื้อเดิม (header + detail); รองรับ `dry_run` และ optimistic-lock ผ่าน `expected_old_doc_ref`/`expected_remark_5` |
 
@@ -265,7 +274,7 @@ http://localhost:8200/openapi.json
 | `GET` | `/api/v1/ic/stock` | ยอดคงเหลือสต๊อกทั้งหมด (paginated) |
 | `GET` | `/api/v1/ic/stock/:code` | ยอดคงเหลือสต๊อกตาม item code |
 | `GET` | `/api/v1/ic/stock-locations` | คลัง/พื้นที่ active พร้อมยอด orphan/blank สำหรับตรวจ config |
-| `GET` | `/api/v1/ic/stock-catalog` | สินค้า stock active พร้อม barcode และหน่วยเรียง `row_order`, `line_number`, `code` |
+| `GET` | `/api/v1/ic/stock-catalog` | สินค้า stock active พร้อม barcode และหน่วย; ส่ง `include_sets=true` เพื่อ opt in สินค้าชุด |
 | `POST` | `/api/v1/ic/stock-balances/batch` | คำนวณยอดหลาย warehouse scope แบบ parameterized สำหรับ marketplace stock sync |
 
 `stock-balances/batch` จำกัด 20 scopes, 50,000 item codes และ 1,000

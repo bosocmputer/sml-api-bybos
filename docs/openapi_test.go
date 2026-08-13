@@ -39,6 +39,7 @@ func TestOpenAPISpecIsValidAndBillFlowNative(t *testing.T) {
 		"/api/v1/ic/warehouses",
 		"/api/v1/ic/stock-locations",
 		"/api/v1/ic/stock-catalog",
+		"/api/v1/ic/product-sets/batch",
 		"/api/v1/ic/stock-balances/batch",
 		"/api/v1/marketplace/nextstep/orders",
 		"/api/v1/ic/sale-orders",

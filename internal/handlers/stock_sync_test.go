@@ -78,8 +78,8 @@ func TestStockCatalogOrdersUnitsBySMLPriority(t *testing.T) {
 	if !strings.Contains(lower, "order by u.row_order, u.line_number, u.code") {
 		t.Fatal("catalog units must use row_order, line_number, code")
 	}
-	if !strings.Contains(lower, "coalesce(i.item_type, 0) = 0") {
-		t.Fatal("catalog must include only normal stock items")
+	if !strings.Contains(lower, "coalesce(i.item_type, 0) = any(@item_types::smallint[])") {
+		t.Fatal("catalog item types must be opt-in through a parameterized list")
 	}
 	if !strings.Contains(lower, "unit_standard_stand_value") || !strings.Contains(lower, "unit_standard_divide_value") {
 		t.Fatal("catalog must preserve explicit SML standard-unit conversion when ic_unit_use has no row")

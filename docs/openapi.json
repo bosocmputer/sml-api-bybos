@@ -918,6 +918,18 @@
             "type": "integer",
             "example": 0
           },
+          "item_type": {
+            "type": "integer",
+            "description": "SML item type. 0 is a stock item and 3 is a set product.",
+            "example": 3
+          },
+          "set_definition": {
+            "$ref": "#/components/schemas/SetProductDefinition"
+          },
+          "set_components": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/SetProductComponent"}
+          },
           "image_count": {
             "type": "integer",
             "example": 1
@@ -937,6 +949,39 @@
             "example": 28412,
             "nullable": true
           }
+        }
+      },
+      "SetProductComponent": {
+        "type": "object",
+        "required": ["line_number", "row_order", "item_code", "unit_code", "qty"],
+        "properties": {
+          "line_number": {"type": "integer"},
+          "row_order": {"type": "integer"},
+          "item_code": {"type": "string"},
+          "item_name": {"type": "string"},
+          "item_type": {"type": "integer"},
+          "unit_code": {"type": "string"},
+          "qty": {"type": "number"},
+          "price": {"type": "number"},
+          "sum_amount": {"type": "number"},
+          "price_ratio": {"type": "number"},
+          "unit_factor": {"type": "number"},
+          "active": {"type": "boolean"},
+          "unit_valid": {"type": "boolean"}
+        }
+      },
+      "SetProductDefinition": {
+        "type": "object",
+        "required": ["item_code", "component_count", "document_valid", "stock_valid", "warning_codes", "hash", "components"],
+        "properties": {
+          "item_code": {"type": "string"},
+          "component_count": {"type": "integer"},
+          "document_valid": {"type": "boolean"},
+          "stock_valid": {"type": "boolean"},
+          "warning_codes": {"type": "array", "items": {"type": "string"}},
+          "weight_method": {"type": "string", "enum": ["sum_amount", "qty_price", "qty_price_ratio", ""]},
+          "hash": {"type": "string"},
+          "components": {"type": "array", "items": {"$ref": "#/components/schemas/SetProductComponent"}}
         }
       },
       "ProductCreatedResponse": {
@@ -1112,6 +1157,11 @@
           },
           "total_amount": {
             "type": "number"
+          },
+          "expand_set_items": {
+            "type": "boolean",
+            "default": false,
+            "description": "Opt-in set expansion. When true, item_type=3 parents are written with component rows from the SML master in one repeatable-read transaction."
           }
         }
       },
@@ -1319,6 +1369,11 @@
           "inquiry_type": {
             "type": "integer",
             "description": "SML inquiry type passed through to ic_trans_detail"
+          },
+          "expand_set_items": {
+            "type": "boolean",
+            "default": false,
+            "description": "Opt-in set expansion. When true, item_type=3 parents are written with component rows from the SML master in one repeatable-read transaction."
           },
           "items": {
             "type": "array",
@@ -4251,16 +4306,40 @@
       "get": {
         "tags": ["Stock"],
         "summary": "List active stock items with barcodes and ordered unit conversions",
-        "description": "Returns active item_type=0 products. Unit priority is row_order, line_number, then code.",
+        "description": "Tenant-generic shared-service endpoint. Returns active item_type=0 products by default. Set include_sets=true to opt in to item_type=3 definitions. Unit priority is row_order, line_number, then code.",
         "parameters": [
           {"name": "page", "in": "query", "schema": {"type": "integer", "minimum": 1, "default": 1}},
           {"name": "size", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}},
           {"name": "updated_from", "in": "query", "schema": {"type": "string"}},
-          {"name": "updated_to", "in": "query", "schema": {"type": "string"}}
+          {"name": "updated_to", "in": "query", "schema": {"type": "string"}},
+          {"name": "include_sets", "in": "query", "schema": {"type": "boolean", "default": false}, "description": "Opt in to active item_type=3 products and their definitions. Default false preserves existing shared-service consumers."}
         ],
         "responses": {
           "200": {"description": "Paged stock catalog"},
           "400": {"description": "Invalid update window", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "500": {"description": "SML query error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/ic/product-sets/batch": {
+      "post": {
+        "tags": ["Products"],
+        "summary": "Load current SML set-product definitions in one batch",
+        "description": "Tenant-generic, opt-in endpoint for shared-service consumers. Uses parameterized queries, returns a stable definition hash, and never modifies SML data.",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": ["item_codes"],
+            "properties": {
+              "item_codes": {"type": "array", "minItems": 1, "maxItems": 500, "uniqueItems": true, "items": {"type": "string"}}
+            }
+          }}}
+        },
+        "responses": {
+          "200": {"description": "Definitions and tenant capability status"},
+          "400": {"description": "Invalid item-code batch", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Tenant schema does not support set products", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "500": {"description": "SML query error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
         }
       }
