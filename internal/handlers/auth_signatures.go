@@ -127,16 +127,16 @@ WITH direct_allowed AS (
     SELECT trim(user_or_group_code) AS user_code
     FROM public.sml_database_list_user_and_group
     WHERE user_or_group_status = 0
-      AND data_group = $1
-      AND data_code = $2
+      AND lower(trim(data_group)) = lower(trim($1))
+      AND lower(trim(data_code)) = lower(trim($2))
 ),
 group_allowed AS (
     SELECT trim(ug.user_code) AS user_code
     FROM public.sml_database_list_user_and_group m
     JOIN public.sml_user_and_group ug ON lower(trim(ug.group_code)) = lower(trim(m.user_or_group_code))
     WHERE m.user_or_group_status = 1
-      AND m.data_group = $1
-      AND m.data_code = $2
+      AND lower(trim(m.data_group)) = lower(trim($1))
+      AND lower(trim(m.data_code)) = lower(trim($2))
 ),
 allowed AS (
     SELECT DISTINCT lower(trim(user_code)) AS user_code
