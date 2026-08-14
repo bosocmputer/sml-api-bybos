@@ -18,7 +18,7 @@ func TestPrepareDocumentItemsExpandsAH0058(t *testing.T) {
 		"AH-0058": {Code: "AH-0058", ItemType: 3, Active: true, Definition: &definition},
 	}
 	payload := docPayload{
-		ExpandSetItems: true, VATType: 1, TotalValue: 600, TotalBeforeVAT: 560.75,
+		ExpandSetItems: true, VATType: 1, VATRate: 7, TotalValue: 600, TotalBeforeVAT: 560.75,
 		TotalVATValue: 39.25, TotalAfterVAT: 600, TotalAmount: 600,
 	}
 	items := []docItem{{
@@ -105,7 +105,7 @@ func TestPrepareDocumentItemsMultipliesComponentQtyPerParentSet(t *testing.T) {
 		"AH-0058": {Code: "AH-0058", ItemType: 3, Active: true, Definition: &definition},
 	}
 	payload := docPayload{
-		ExpandSetItems: true, VATType: 1, TotalValue: 1200, TotalBeforeVAT: 1121.50,
+		ExpandSetItems: true, VATType: 1, VATRate: 7, TotalValue: 1200, TotalBeforeVAT: 1121.50,
 		TotalVATValue: 78.50, TotalAfterVAT: 1200, TotalAmount: 1200,
 	}
 	got, err := prepareDocumentItems(payload, []docItem{{
@@ -124,6 +124,30 @@ func TestPrepareDocumentItemsMultipliesComponentQtyPerParentSet(t *testing.T) {
 	}
 	if child.SumAmount != 1200 || child.Price != 200 {
 		t.Fatalf("child sum/price = %.2f/%.2f, want 1200/200", child.SumAmount, child.Price)
+	}
+}
+
+func TestPrepareDocumentItemsKeepsHeaderDiscountOutOfSetChildren(t *testing.T) {
+	definition := setproducts.BuildDefinition("SET", []setproducts.Component{
+		{LineNumber: 1, ItemCode: "A", ItemType: 0, UnitCode: "ชิ้น", Qty: 1, SumAmount: 60, UnitFactor: 1, Active: true, UnitValid: true},
+		{LineNumber: 2, ItemCode: "B", ItemType: 0, UnitCode: "ชิ้น", Qty: 1, SumAmount: 40, UnitFactor: 1, Active: true, UnitValid: true},
+	})
+	products := map[string]setproducts.Product{"SET": {Code: "SET", ItemType: 3, Active: true, Definition: &definition}}
+	payload := docPayload{ExpandSetItems: true, VATType: 1, VATRate: 7, TotalValue: 100,
+		TotalDiscount: 10, TotalBeforeVAT: 84.11, TotalVATValue: 5.89, TotalAfterVAT: 90, TotalAmount: 90}
+	got, err := prepareDocumentItems(payload, []docItem{{ItemCode: "SET", UnitCode: "ชุด", Qty: 1,
+		Price: 100, SumAmount: 100, SumAmountExclVAT: 93.46, TotalVATValue: 6.54}}, routeSaleInvoice, products)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("prepared lines = %d, want parent + two children", len(got))
+	}
+	if got[0].DiscountAmount != 0 || got[1].DiscountAmount != 0 || got[2].DiscountAmount != 0 {
+		t.Fatalf("line discounts must stay zero: %.2f/%.2f/%.2f", got[0].DiscountAmount, got[1].DiscountAmount, got[2].DiscountAmount)
+	}
+	if got[1].SumAmount+got[2].SumAmount != 100 {
+		t.Fatalf("children gross = %.2f, want 100", got[1].SumAmount+got[2].SumAmount)
 	}
 }
 

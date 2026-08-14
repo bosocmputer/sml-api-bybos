@@ -783,14 +783,11 @@ func compareDocumentAfterUniqueConflict(ctx context.Context, pool txBeginner, p 
 func prepareDocumentItems(p docPayload, items []docItem, route docRoute, products map[string]setproducts.Product) ([]preparedDocItem, error) {
 	prepared := make([]preparedDocItem, 0, len(items))
 	hasSet := false
-	var parentTotal, parentVAT, parentExclude, parentDiscount int64
+	var parentTotal int64
 	for _, raw := range items {
 		item := normalizeDocItem(raw)
 		product := products[strings.TrimSpace(item.ItemCode)]
 		parentTotal += setproducts.MoneyToCents(item.SumAmount)
-		parentVAT += setproducts.MoneyToCents(item.TotalVATValue)
-		parentExclude += setproducts.MoneyToCents(item.SumAmountExclVAT)
-		parentDiscount += setproducts.MoneyToCents(item.DiscountAmount)
 		if product.ItemType == 3 && !p.ExpandSetItems {
 			return nil, newAppError(http.StatusConflict, "set_product_expansion_disabled", "set product expansion must be enabled before creating a document with set products", gin.H{"item_code": item.ItemCode})
 		}
@@ -829,10 +826,6 @@ func prepareDocumentItems(p docPayload, items []docItem, route docRoute, product
 		if err != nil {
 			return nil, newAppError(http.StatusConflict, "set_allocation_invalid", "set product VAT allocation is invalid", gin.H{"item_code": item.ItemCode})
 		}
-		discountAlloc, err := setproducts.AllocateCents(setproducts.MoneyToCents(item.DiscountAmount), definition.Components)
-		if err != nil {
-			return nil, newAppError(http.StatusConflict, "set_allocation_invalid", "set product discount allocation is invalid", gin.H{"item_code": item.ItemCode})
-		}
 		for componentIndex, component := range definition.Components {
 			childQty := item.Qty * component.Qty
 			if childQty <= 0 {
@@ -841,7 +834,6 @@ func prepareDocumentItems(p docPayload, items []docItem, route docRoute, product
 			childSum := setproducts.CentsToMoney(sumAlloc[componentIndex])
 			childExclude := setproducts.CentsToMoney(excludeAlloc[componentIndex])
 			childVAT := setproducts.CentsToMoney(vatAlloc[componentIndex])
-			childDiscount := setproducts.CentsToMoney(discountAlloc[componentIndex])
 			childPrice := round6(childSum / childQty)
 			childPriceExclude := round6(childExclude / childQty)
 			child := docItem{
@@ -849,7 +841,7 @@ func prepareDocumentItems(p docPayload, items []docItem, route docRoute, product
 				IsGetPrice: 1, UnitCode: component.UnitCode,
 				WHCode: item.WHCode, ShelfCode: item.ShelfCode, WHCode2: item.WHCode2, ShelfCode2: item.ShelfCode2,
 				Qty: childQty, Price: childPrice, PriceExcludeVAT: childPriceExclude,
-				DiscountAmount: childDiscount, SumAmount: childSum,
+				DiscountAmount: 0, SumAmount: childSum,
 				VATAmount: childVAT, TotalVATValue: childVAT,
 				TaxType: item.TaxType, VATType: item.VATType, SumAmountExclVAT: childExclude,
 			}
@@ -861,19 +853,21 @@ func prepareDocumentItems(p docPayload, items []docItem, route docRoute, product
 		}
 	}
 	if hasSet {
-		expectedAfterVAT := parentTotal
-		if p.VATType == 0 {
-			expectedAfterVAT += parentVAT
+		headerDiscount := setproducts.MoneyToCents(p.TotalDiscount)
+		if headerDiscount < 0 || headerDiscount > parentTotal {
+			return nil, newAppError(http.StatusConflict, "document_total_mismatch", "document discount must be between zero and the marketplace gross total", gin.H{
+				"parent_total": setproducts.CentsToMoney(parentTotal), "header_discount": p.TotalDiscount,
+			})
 		}
+		expectedBeforeVAT, expectedVAT, expectedAfterVAT := expectedDiscountedHeaderCents(parentTotal-headerDiscount, p.VATType, p.VATRate)
 		if absCents(parentTotal-setproducts.MoneyToCents(p.TotalValue)) > 1 ||
-			absCents(parentVAT-setproducts.MoneyToCents(p.TotalVATValue)) > 1 ||
-			absCents(parentExclude-setproducts.MoneyToCents(p.TotalBeforeVAT)) > 1 ||
-			absCents(parentDiscount-setproducts.MoneyToCents(p.TotalDiscount)) > 1 ||
+			absCents(expectedVAT-setproducts.MoneyToCents(p.TotalVATValue)) > 1 ||
+			absCents(expectedBeforeVAT-setproducts.MoneyToCents(p.TotalBeforeVAT)) > 1 ||
 			absCents(expectedAfterVAT-setproducts.MoneyToCents(p.TotalAfterVAT)) > 1 ||
 			absCents(expectedAfterVAT-setproducts.MoneyToCents(p.TotalAmount)) > 1 {
 			return nil, newAppError(http.StatusConflict, "document_total_mismatch", "document header totals do not match marketplace parent lines", gin.H{
 				"parent_total": setproducts.CentsToMoney(parentTotal), "header_total_value": p.TotalValue,
-				"parent_vat": setproducts.CentsToMoney(parentVAT), "header_vat": p.TotalVATValue,
+				"header_discount": p.TotalDiscount, "header_vat": p.TotalVATValue,
 				"expected_total_amount": setproducts.CentsToMoney(expectedAfterVAT), "header_total_amount": p.TotalAmount,
 			})
 		}
@@ -882,6 +876,27 @@ func prepareDocumentItems(p docPayload, items []docItem, route docRoute, product
 		prepared[i].LineNumber = i
 	}
 	return prepared, nil
+}
+
+// expectedDiscountedHeaderCents calculates header VAT from the gross parent
+// total after the document-level discount. Set children stay at gross values;
+// the discount is intentionally not distributed to detail rows.
+func expectedDiscountedHeaderCents(netCents int64, vatType int, vatRate float64) (beforeVAT, vat, afterVAT int64) {
+	net := setproducts.CentsToMoney(netCents)
+	switch vatType {
+	case 1:
+		beforeVAT = setproducts.MoneyToCents(net / (1 + vatRate/100))
+		vat = netCents - beforeVAT
+		afterVAT = netCents
+	case 2:
+		beforeVAT = netCents
+		afterVAT = netCents
+	default:
+		beforeVAT = netCents
+		vat = setproducts.MoneyToCents(net * vatRate / 100)
+		afterVAT = netCents + vat
+	}
+	return
 }
 
 func normalizeDocItem(item docItem) docItem {
@@ -902,16 +917,17 @@ func normalizeDocItem(item docItem) docItem {
 
 func existingDocumentMatches(ctx context.Context, tx pgx.Tx, p docPayload, items []docItem, route docRoute) (bool, error) {
 	var custCode string
-	var totalValue, totalVAT, totalAmount float64
+	var totalValue, totalDiscount, totalVAT, totalAmount float64
 	err := tx.QueryRow(ctx, `SELECT COALESCE(cust_code,''), COALESCE(total_value,0)::float8,
-		COALESCE(total_vat_value,0)::float8, COALESCE(total_amount,0)::float8
+		COALESCE(total_discount,0)::float8, COALESCE(total_vat_value,0)::float8, COALESCE(total_amount,0)::float8
 		FROM ic_trans WHERE doc_no=$1 AND trans_flag=$2 AND COALESCE(last_status,0)=0
-		FOR UPDATE`, p.DocNo, route.transFlag).Scan(&custCode, &totalValue, &totalVAT, &totalAmount)
+		FOR UPDATE`, p.DocNo, route.transFlag).Scan(&custCode, &totalValue, &totalDiscount, &totalVAT, &totalAmount)
 	if err != nil {
 		return false, fmt.Errorf("load existing document header: %w", err)
 	}
 	if strings.TrimSpace(custCode) != p.CustCode ||
 		absCents(setproducts.MoneyToCents(totalValue)-setproducts.MoneyToCents(p.TotalValue)) > 1 ||
+		absCents(setproducts.MoneyToCents(totalDiscount)-setproducts.MoneyToCents(p.TotalDiscount)) > 1 ||
 		absCents(setproducts.MoneyToCents(totalVAT)-setproducts.MoneyToCents(p.TotalVATValue)) > 1 ||
 		absCents(setproducts.MoneyToCents(totalAmount)-setproducts.MoneyToCents(p.TotalAmount)) > 1 {
 		return false, nil
