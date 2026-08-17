@@ -214,10 +214,11 @@ type StockLocationPair struct {
 }
 
 type StockBalanceScopeRequest struct {
-	ScopeID   string              `json:"scope_id"`
-	ItemCodes []string            `json:"item_codes"`
-	ScopeMode string              `json:"scope_mode"`
-	Locations []StockLocationPair `json:"locations,omitempty"`
+	ScopeID                      string              `json:"scope_id"`
+	ItemCodes                    []string            `json:"item_codes"`
+	ScopeMode                    string              `json:"scope_mode"`
+	Locations                    []StockLocationPair `json:"locations,omitempty"`
+	IncludeItemExcludedLocations bool                `json:"include_item_excluded_locations,omitempty"`
 }
 
 type StockBalanceBatchRequest struct {
@@ -226,15 +227,16 @@ type StockBalanceBatchRequest struct {
 }
 
 type StockBalanceItem struct {
-	ItemCode           string  `json:"item_code"`
-	ItemName           string  `json:"item_name,omitempty"`
-	UnitCode           string  `json:"unit_code,omitempty"`
-	RawBalanceQty      float64 `json:"raw_balance_qty"`
-	BalanceQty         float64 `json:"balance_qty"`
-	ExcludedBalanceQty float64 `json:"excluded_balance_qty,omitempty"`
-	MinQty             float64 `json:"min_qty"`
-	MaxQty             float64 `json:"max_qty"`
-	NegativeClamped    bool    `json:"negative_clamped,omitempty"`
+	ItemCode           string                 `json:"item_code"`
+	ItemName           string                 `json:"item_name,omitempty"`
+	UnitCode           string                 `json:"unit_code,omitempty"`
+	RawBalanceQty      float64                `json:"raw_balance_qty"`
+	BalanceQty         float64                `json:"balance_qty"`
+	ExcludedBalanceQty float64                `json:"excluded_balance_qty,omitempty"`
+	ExcludedLocations  []StockBalanceLocation `json:"excluded_locations,omitempty"`
+	MinQty             float64                `json:"min_qty"`
+	MaxQty             float64                `json:"max_qty"`
+	NegativeClamped    bool                   `json:"negative_clamped,omitempty"`
 }
 
 // StockBalanceLocation explains balances outside a selected scope without
@@ -608,16 +610,17 @@ type stockBalanceRow struct {
 }
 
 type stockBalanceScopeState struct {
-	request           StockBalanceScopeRequest
-	items             map[string]*StockBalanceItem
-	selected          map[string]struct{}
-	excludedLocations map[string]*StockBalanceLocation
+	request               StockBalanceScopeRequest
+	items                 map[string]*StockBalanceItem
+	selected              map[string]struct{}
+	excludedLocations     map[string]*StockBalanceLocation
+	itemExcludedLocations map[string]map[string]*StockBalanceLocation
 }
 
 func newStockBalanceScopeState(scope StockBalanceScopeRequest) stockBalanceScopeState {
 	state := stockBalanceScopeState{
 		request: scope, items: map[string]*StockBalanceItem{}, selected: map[string]struct{}{},
-		excludedLocations: map[string]*StockBalanceLocation{},
+		excludedLocations: map[string]*StockBalanceLocation{}, itemExcludedLocations: map[string]map[string]*StockBalanceLocation{},
 	}
 	for _, code := range scope.ItemCodes {
 		state.items[code] = &StockBalanceItem{ItemCode: code}
@@ -658,6 +661,22 @@ func accumulateStockBalanceRow(states []stockBalanceScopeState, row stockBalance
 			states[i].excludedLocations[balanceKey] = location
 		}
 		location.BalanceQty += row.BalanceQty
+		if states[i].request.IncludeItemExcludedLocations {
+			itemLocations := states[i].itemExcludedLocations[row.ItemCode]
+			if itemLocations == nil {
+				itemLocations = map[string]*StockBalanceLocation{}
+				states[i].itemExcludedLocations[row.ItemCode] = itemLocations
+			}
+			itemLocation := itemLocations[balanceKey]
+			if itemLocation == nil {
+				itemLocation = &StockBalanceLocation{
+					WarehouseCode: row.WarehouseCode, WarehouseName: row.WarehouseName,
+					LocationCode: row.LocationCode, LocationName: row.LocationName, UnitCode: row.UnitCode,
+				}
+				itemLocations[balanceKey] = itemLocation
+			}
+			itemLocation.BalanceQty += row.BalanceQty
+		}
 	}
 }
 
@@ -711,6 +730,9 @@ func calculateStockScopes(ctx context.Context, pool stockSyncQuerier, req StockB
 		}
 		for _, code := range state.request.ItemCodes {
 			item := state.items[code]
+			if state.request.IncludeItemExcludedLocations {
+				item.ExcludedLocations = sortedNonZeroStockLocations(state.itemExcludedLocations[code])
+			}
 			item.BalanceQty = item.RawBalanceQty
 			if item.BalanceQty < 0 {
 				item.BalanceQty = 0

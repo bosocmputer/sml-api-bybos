@@ -91,10 +91,11 @@ func TestNormalizeStockBatchRejectsUnsafeOrAmbiguousScope(t *testing.T) {
 
 func TestAccumulateStockBalanceRowExplainsExcludedWarehouseLocations(t *testing.T) {
 	states := []stockBalanceScopeState{newStockBalanceScopeState(StockBalanceScopeRequest{
-		ScopeID:   "shop:1",
-		ScopeMode: "selected",
-		ItemCodes: []string{"A", "B"},
-		Locations: []StockLocationPair{{Warehouse: "W1", Location: "S1"}},
+		ScopeID:                      "shop:1",
+		ScopeMode:                    "selected",
+		ItemCodes:                    []string{"A", "B"},
+		Locations:                    []StockLocationPair{{Warehouse: "W1", Location: "S1"}},
+		IncludeItemExcludedLocations: true,
 	})}
 
 	rows := []stockBalanceRow{
@@ -118,6 +119,21 @@ func TestAccumulateStockBalanceRowExplainsExcludedWarehouseLocations(t *testing.
 	}
 	if states[0].items["A"].RawBalanceQty != 10 || states[0].items["A"].ExcludedBalanceQty != 9 || states[0].items["B"].ExcludedBalanceQty != -12 {
 		t.Fatalf("item balances = A:%#v B:%#v", states[0].items["A"], states[0].items["B"])
+	}
+	itemALocations := sortedNonZeroStockLocations(states[0].itemExcludedLocations["A"])
+	if len(itemALocations) != 2 || itemALocations[0].WarehouseCode != "W2" || itemALocations[0].BalanceQty != 5 || itemALocations[1].WarehouseCode != "W3" || itemALocations[1].BalanceQty != 4 {
+		t.Fatalf("item A excluded locations = %#v", itemALocations)
+	}
+}
+
+func TestItemExcludedLocationsAreOptIn(t *testing.T) {
+	states := []stockBalanceScopeState{newStockBalanceScopeState(StockBalanceScopeRequest{
+		ScopeID: "shop:1", ScopeMode: "selected", ItemCodes: []string{"A"},
+		Locations: []StockLocationPair{{Warehouse: "W1", Location: "S1"}},
+	})}
+	accumulateStockBalanceRow(states, stockBalanceRow{ItemCode: "A", WarehouseCode: "W2", LocationCode: "S2", UnitCode: "ชิ้น", BalanceQty: 2})
+	if len(states[0].itemExcludedLocations) != 0 {
+		t.Fatalf("item-level location detail must stay opt-in: %#v", states[0].itemExcludedLocations)
 	}
 }
 

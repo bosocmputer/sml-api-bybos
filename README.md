@@ -282,7 +282,10 @@ warehouse/location pairs ต่อ request ระบบเรียก stock fun
 แล้วใช้ `ANY($n)` ภายนอก จึงไม่ส่ง input จาก HTTP เข้า dynamic SQL ของ SML
 โดยตรง สำหรับ scope แบบ `selected` response จะคืน `excluded_locations` ที่รวม
 ยอดนอกขอบเขตแยกตามคลัง พื้นที่เก็บ และหน่วยนับ เพื่อให้ client อธิบายที่มาของ
-ยอดได้โดยไม่ต้อง query ซ้ำ ยอดดังกล่าวเป็นข้อมูลประกอบและไม่รวมใน `balance_qty`
+ยอดได้โดยไม่ต้อง query ซ้ำ หากส่ง `include_item_excluded_locations=true` ใน scope
+แต่ละ item จะคืน breakdown เดียวกันใน `items[].excluded_locations` สำหรับ UI
+ระดับสินค้า ฟิลด์นี้เป็น opt-in เพื่อไม่เพิ่ม payload ให้ consumer อื่นของ shared
+service ยอดดังกล่าวเป็นข้อมูลประกอบและไม่รวมใน `balance_qty`
 
 ### Warehouses
 

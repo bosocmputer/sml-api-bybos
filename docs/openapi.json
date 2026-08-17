@@ -4348,7 +4348,7 @@
       "post": {
         "tags": ["Stock"],
         "summary": "Calculate stock balances for multiple warehouse scopes",
-        "description": "Calls the SML warehouse-location stock function once, filters requested item codes with a parameterized ANY predicate, aggregates each scope, then clamps negative item totals to zero. Selected scopes also return excluded_locations grouped by warehouse, location, and unit so clients can explain balances that are not used in the selected scope.",
+        "description": "Calls the SML warehouse-location stock function once, filters requested item codes with a parameterized ANY predicate, aggregates each scope, then clamps negative item totals to zero. Selected scopes also return excluded_locations grouped by warehouse, location, and unit so clients can explain balances that are not used in the selected scope. Set include_item_excluded_locations=true on a scope to opt in to the same breakdown under each affected item without changing the default payload for other shared-service consumers.",
         "requestBody": {
           "required": true,
           "content": {
@@ -4369,6 +4369,7 @@
                         "scope_id": {"type": "string", "maxLength": 100},
                         "item_codes": {"type": "array", "items": {"type": "string"}},
                         "scope_mode": {"type": "string", "enum": ["all", "selected"]},
+                        "include_item_excluded_locations": {"type": "boolean", "default": false, "description": "Include excluded warehouse/location/unit balances under each item. Opt-in because this increases response size."},
                         "locations": {
                           "type": "array",
                           "items": {
