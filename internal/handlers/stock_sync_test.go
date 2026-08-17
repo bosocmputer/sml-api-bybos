@@ -23,6 +23,22 @@ func TestStockBalanceSQLUsesSafeOuterFilters(t *testing.T) {
 	if !strings.Contains(lower, "coalesce(i.item_type, 0) = 0") {
 		t.Fatal("stock query must include only normal stock items")
 	}
+	if !strings.Contains(lower, "left join public.ic_warehouse") || !strings.Contains(lower, "left join public.ic_shelf") {
+		t.Fatal("stock query must resolve warehouse and location names in the existing calculation query")
+	}
+}
+
+func TestExcludedLocationBalancesDoNotMixUnits(t *testing.T) {
+	states := []stockBalanceScopeState{newStockBalanceScopeState(StockBalanceScopeRequest{
+		ScopeID: "shop:1", ScopeMode: "selected", ItemCodes: []string{"A", "B"},
+		Locations: []StockLocationPair{{Warehouse: "W1", Location: "S1"}},
+	})}
+	accumulateStockBalanceRow(states, stockBalanceRow{ItemCode: "A", WarehouseCode: "W2", LocationCode: "S2", UnitCode: "ชิ้น", BalanceQty: 2})
+	accumulateStockBalanceRow(states, stockBalanceRow{ItemCode: "B", WarehouseCode: "W2", LocationCode: "S2", UnitCode: "กล่อง", BalanceQty: 3})
+	locations := sortedNonZeroStockLocations(states[0].excludedLocations)
+	if len(locations) != 2 || locations[0].UnitCode == locations[1].UnitCode {
+		t.Fatalf("excluded locations must stay separated by unit: %#v", locations)
+	}
 }
 
 func TestNormalizeStockBatchRequest(t *testing.T) {
@@ -70,6 +86,38 @@ func TestNormalizeStockBatchRejectsUnsafeOrAmbiguousScope(t *testing.T) {
 				t.Fatal("expected validation error")
 			}
 		})
+	}
+}
+
+func TestAccumulateStockBalanceRowExplainsExcludedWarehouseLocations(t *testing.T) {
+	states := []stockBalanceScopeState{newStockBalanceScopeState(StockBalanceScopeRequest{
+		ScopeID:   "shop:1",
+		ScopeMode: "selected",
+		ItemCodes: []string{"A", "B"},
+		Locations: []StockLocationPair{{Warehouse: "W1", Location: "S1"}},
+	})}
+
+	rows := []stockBalanceRow{
+		{ItemCode: "A", WarehouseCode: "W1", WarehouseName: "คลังขาย", LocationCode: "S1", LocationName: "หน้าร้าน", BalanceQty: 10, UnitCode: "ชิ้น"},
+		{ItemCode: "A", WarehouseCode: "W2", WarehouseName: "คลังสำรอง", LocationCode: "S2", LocationName: "ชั้นสอง", BalanceQty: 5, UnitCode: "ชิ้น"},
+		{ItemCode: "B", WarehouseCode: "W2", WarehouseName: "คลังสำรอง", LocationCode: "S2", LocationName: "ชั้นสอง", BalanceQty: -8, UnitCode: "ชิ้น"},
+		{ItemCode: "A", WarehouseCode: "W3", WarehouseName: "คลังตรวจนับ", LocationCode: "S3", LocationName: "พักสินค้า", BalanceQty: 4, UnitCode: "ชิ้น"},
+		{ItemCode: "B", WarehouseCode: "W3", WarehouseName: "คลังตรวจนับ", LocationCode: "S3", LocationName: "พักสินค้า", BalanceQty: -4, UnitCode: "ชิ้น"},
+	}
+	for _, row := range rows {
+		accumulateStockBalanceRow(states, row)
+	}
+
+	locations := sortedNonZeroStockLocations(states[0].excludedLocations)
+	if len(locations) != 1 {
+		t.Fatalf("excluded locations = %#v, want one non-zero location", locations)
+	}
+	got := locations[0]
+	if got.WarehouseCode != "W2" || got.WarehouseName != "คลังสำรอง" || got.LocationCode != "S2" || got.LocationName != "ชั้นสอง" || got.UnitCode != "ชิ้น" || got.BalanceQty != -3 {
+		t.Fatalf("excluded location = %#v", got)
+	}
+	if states[0].items["A"].RawBalanceQty != 10 || states[0].items["A"].ExcludedBalanceQty != 9 || states[0].items["B"].ExcludedBalanceQty != -12 {
+		t.Fatalf("item balances = A:%#v B:%#v", states[0].items["A"], states[0].items["B"])
 	}
 }
 

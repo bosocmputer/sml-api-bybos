@@ -4348,7 +4348,7 @@
       "post": {
         "tags": ["Stock"],
         "summary": "Calculate stock balances for multiple warehouse scopes",
-        "description": "Calls the SML warehouse-location stock function once, filters requested item codes with a parameterized ANY predicate, aggregates each scope, then clamps negative item totals to zero.",
+        "description": "Calls the SML warehouse-location stock function once, filters requested item codes with a parameterized ANY predicate, aggregates each scope, then clamps negative item totals to zero. Selected scopes also return excluded_locations grouped by warehouse, location, and unit so clients can explain balances that are not used in the selected scope.",
         "requestBody": {
           "required": true,
           "content": {
@@ -4389,7 +4389,7 @@
           }
         },
         "responses": {
-          "200": {"description": "Aggregated balances by scope and item"},
+          "200": {"description": "Aggregated balances by scope and item, including excluded warehouse/location/unit breakdowns for selected scopes"},
           "400": {"description": "Invalid scope, item, location, or request cap", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "504": {"description": "Stock calculation timeout", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
         }

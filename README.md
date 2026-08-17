@@ -280,7 +280,9 @@ Set-product fields เป็น contract กลางแบบ tenant-generic �
 `stock-balances/batch` จำกัด 20 scopes, 50,000 item codes และ 1,000
 warehouse/location pairs ต่อ request ระบบเรียก stock function โดยส่ง filter ว่าง
 แล้วใช้ `ANY($n)` ภายนอก จึงไม่ส่ง input จาก HTTP เข้า dynamic SQL ของ SML
-โดยตรง
+โดยตรง สำหรับ scope แบบ `selected` response จะคืน `excluded_locations` ที่รวม
+ยอดนอกขอบเขตแยกตามคลัง พื้นที่เก็บ และหน่วยนับ เพื่อให้ client อธิบายที่มาของ
+ยอดได้โดยไม่ต้อง query ซ้ำ ยอดดังกล่าวเป็นข้อมูลประกอบและไม่รวมใน `balance_qty`
 
 ### Warehouses
 

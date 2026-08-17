@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -36,13 +37,20 @@ const stockBalanceRowsSQL = `SELECT
 	b.ic_code,
 	COALESCE(b.ic_name, ''),
 	TRIM(COALESCE(b.warehouse, '')),
+	COALESCE(w.name_1, ''),
 	TRIM(COALESCE(b.location, '')),
+	COALESCE(s.name_1, ''),
 	COALESCE(b.min_qty, 0)::float8,
 	COALESCE(b.max_qty, 0)::float8,
 	COALESCE(b.balance_qty, 0)::float8,
 	COALESCE(b.ic_unit_code, '')
 FROM public.sml_ic_function_stock_balance_warehouse_location($1::date, '', '', '') b
 JOIN public.ic_inventory i ON i.code = b.ic_code
+LEFT JOIN public.ic_warehouse w
+  ON w.code = TRIM(COALESCE(b.warehouse, ''))
+LEFT JOIN public.ic_shelf s
+  ON s.whcode = TRIM(COALESCE(b.warehouse, ''))
+ AND s.code = TRIM(COALESCE(b.location, ''))
 WHERE COALESCE(i.status, 0) = 0
   AND COALESCE(i.item_type, 0) = 0
   AND b.ic_code = ANY($2::text[])
@@ -229,9 +237,22 @@ type StockBalanceItem struct {
 	NegativeClamped    bool    `json:"negative_clamped,omitempty"`
 }
 
+// StockBalanceLocation explains balances outside a selected scope without
+// exposing item-level rows. This keeps the shared API response bounded while
+// allowing clients to show users which SML warehouse/location holds the stock.
+type StockBalanceLocation struct {
+	WarehouseCode string  `json:"warehouse_code"`
+	WarehouseName string  `json:"warehouse_name,omitempty"`
+	LocationCode  string  `json:"location_code"`
+	LocationName  string  `json:"location_name,omitempty"`
+	UnitCode      string  `json:"unit_code,omitempty"`
+	BalanceQty    float64 `json:"balance_qty"`
+}
+
 type StockBalanceScopeResult struct {
-	ScopeID string             `json:"scope_id"`
-	Items   []StockBalanceItem `json:"items"`
+	ScopeID           string                 `json:"scope_id"`
+	Items             []StockBalanceItem     `json:"items"`
+	ExcludedLocations []StockBalanceLocation `json:"excluded_locations"`
 }
 
 type StockBalanceBatchResponse struct {
@@ -573,23 +594,93 @@ func normalizeStockBatchRequest(req StockBalanceBatchRequest) (StockBalanceBatch
 	return req, sortedKeys(uniqueItems), nil
 }
 
+type stockBalanceRow struct {
+	ItemCode      string
+	ItemName      string
+	WarehouseCode string
+	WarehouseName string
+	LocationCode  string
+	LocationName  string
+	MinQty        float64
+	MaxQty        float64
+	BalanceQty    float64
+	UnitCode      string
+}
+
+type stockBalanceScopeState struct {
+	request           StockBalanceScopeRequest
+	items             map[string]*StockBalanceItem
+	selected          map[string]struct{}
+	excludedLocations map[string]*StockBalanceLocation
+}
+
+func newStockBalanceScopeState(scope StockBalanceScopeRequest) stockBalanceScopeState {
+	state := stockBalanceScopeState{
+		request: scope, items: map[string]*StockBalanceItem{}, selected: map[string]struct{}{},
+		excludedLocations: map[string]*StockBalanceLocation{},
+	}
+	for _, code := range scope.ItemCodes {
+		state.items[code] = &StockBalanceItem{ItemCode: code}
+	}
+	for _, pair := range scope.Locations {
+		state.selected[locationKey(pair.Warehouse, pair.Location)] = struct{}{}
+	}
+	return state
+}
+
+func accumulateStockBalanceRow(states []stockBalanceScopeState, row stockBalanceRow) {
+	key := locationKey(row.WarehouseCode, row.LocationCode)
+	for i := range states {
+		item := states[i].items[row.ItemCode]
+		if item == nil {
+			continue
+		}
+		item.ItemName = row.ItemName
+		item.UnitCode = row.UnitCode
+		included := states[i].request.ScopeMode == "all"
+		if !included {
+			_, included = states[i].selected[key]
+		}
+		if included {
+			item.RawBalanceQty += row.BalanceQty
+			item.MinQty += row.MinQty
+			item.MaxQty += row.MaxQty
+			continue
+		}
+		item.ExcludedBalanceQty += row.BalanceQty
+		balanceKey := key + "\x00" + strings.TrimSpace(row.UnitCode)
+		location := states[i].excludedLocations[balanceKey]
+		if location == nil {
+			location = &StockBalanceLocation{
+				WarehouseCode: row.WarehouseCode, WarehouseName: row.WarehouseName,
+				LocationCode: row.LocationCode, LocationName: row.LocationName, UnitCode: row.UnitCode,
+			}
+			states[i].excludedLocations[balanceKey] = location
+		}
+		location.BalanceQty += row.BalanceQty
+	}
+}
+
+func sortedNonZeroStockLocations(values map[string]*StockBalanceLocation) []StockBalanceLocation {
+	keys := make([]string, 0, len(values))
+	for key, value := range values {
+		if value != nil && math.Abs(value.BalanceQty) > 1e-9 {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	result := make([]StockBalanceLocation, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, *values[key])
+	}
+	return result
+}
+
 func calculateStockScopes(ctx context.Context, pool stockSyncQuerier, req StockBalanceBatchRequest, itemCodes []string) (*StockBalanceBatchResponse, error) {
 	asOfDate, _ := time.Parse("2006-01-02", req.AsOfDate)
-	type scopeState struct {
-		request  StockBalanceScopeRequest
-		items    map[string]*StockBalanceItem
-		selected map[string]struct{}
-	}
-	states := make([]scopeState, len(req.Scopes))
+	states := make([]stockBalanceScopeState, len(req.Scopes))
 	for i, scope := range req.Scopes {
-		state := scopeState{request: scope, items: map[string]*StockBalanceItem{}, selected: map[string]struct{}{}}
-		for _, code := range scope.ItemCodes {
-			state.items[code] = &StockBalanceItem{ItemCode: code}
-		}
-		for _, pair := range scope.Locations {
-			state.selected[locationKey(pair.Warehouse, pair.Location)] = struct{}{}
-		}
-		states[i] = state
+		states[i] = newStockBalanceScopeState(scope)
 	}
 	rows, err := pool.Query(ctx, stockBalanceRowsSQL, asOfDate, itemCodes)
 	if err != nil {
@@ -597,32 +688,16 @@ func calculateStockScopes(ctx context.Context, pool stockSyncQuerier, req StockB
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var code, name, warehouse, location, unit string
-		var minQty, maxQty, balance float64
-		if err := rows.Scan(&code, &name, &warehouse, &location, &minQty, &maxQty, &balance, &unit); err != nil {
+		var row stockBalanceRow
+		if err := rows.Scan(
+			&row.ItemCode, &row.ItemName,
+			&row.WarehouseCode, &row.WarehouseName,
+			&row.LocationCode, &row.LocationName,
+			&row.MinQty, &row.MaxQty, &row.BalanceQty, &row.UnitCode,
+		); err != nil {
 			return nil, err
 		}
-		_ = minQty
-		_ = maxQty
-		for i := range states {
-			item := states[i].items[code]
-			if item == nil {
-				continue
-			}
-			item.ItemName = name
-			item.UnitCode = unit
-			included := states[i].request.ScopeMode == "all"
-			if !included {
-				_, included = states[i].selected[locationKey(warehouse, location)]
-			}
-			if included {
-				item.RawBalanceQty += balance
-				item.MinQty += minQty
-				item.MaxQty += maxQty
-			} else {
-				item.ExcludedBalanceQty += balance
-			}
-		}
+		accumulateStockBalanceRow(states, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -630,7 +705,10 @@ func calculateStockScopes(ctx context.Context, pool stockSyncQuerier, req StockB
 	response := &StockBalanceBatchResponse{AsOfDate: req.AsOfDate, CheckedAt: time.Now().UTC().Format(time.RFC3339)}
 	response.Scopes = make([]StockBalanceScopeResult, 0, len(states))
 	for _, state := range states {
-		result := StockBalanceScopeResult{ScopeID: state.request.ScopeID, Items: make([]StockBalanceItem, 0, len(state.request.ItemCodes))}
+		result := StockBalanceScopeResult{
+			ScopeID: state.request.ScopeID, Items: make([]StockBalanceItem, 0, len(state.request.ItemCodes)),
+			ExcludedLocations: sortedNonZeroStockLocations(state.excludedLocations),
+		}
 		for _, code := range state.request.ItemCodes {
 			item := state.items[code]
 			item.BalanceQty = item.RawBalanceQty
