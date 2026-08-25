@@ -150,6 +150,16 @@ func TestStockCatalogOrdersUnitsBySMLPriority(t *testing.T) {
 	}
 }
 
+func TestStockCatalogAcceptsObservedUnitUseStatusConventions(t *testing.T) {
+	lower := strings.ToLower(stockCatalogSQL)
+	if !strings.Contains(lower, "coalesce(u.status, 0) in (0, 1)") {
+		t.Fatal("catalog must include ic_unit_use rows from both observed SML status conventions")
+	}
+	if !strings.Contains(lower, "coalesce(existing.status, 0) in (0, 1)") {
+		t.Fatal("standard-unit fallback must detect units from both observed SML status conventions")
+	}
+}
+
 func TestStockLocationDiagnosticsOnlyCountActiveStockItems(t *testing.T) {
 	lower := strings.ToLower(stockLocationDiagnosticsSQL)
 	if !strings.Contains(lower, "join public.ic_inventory") || !strings.Contains(lower, "coalesce(i.item_type, 0) = 0") || !strings.Contains(lower, "coalesce(i.status, 0) = 0") {

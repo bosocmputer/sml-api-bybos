@@ -133,7 +133,9 @@ const stockCatalogSQL = `WITH page AS (
 		COALESCE(u.row_order, 2147483647) AS row_order,
 		COALESCE(u.line_number, 2147483647) AS line_number
 	FROM page p
-	JOIN public.ic_unit_use u ON u.ic_code = p.code AND COALESCE(u.status, 0) = 0
+	-- SML tenants in production encode usable ic_unit_use rows as either
+	-- status 0 or status 1; values outside that observed contract stay closed.
+	JOIN public.ic_unit_use u ON u.ic_code = p.code AND COALESCE(u.status, 0) IN (0, 1)
 	LEFT JOIN public.ic_unit master ON master.code = u.code
 	UNION ALL
 	SELECT
@@ -151,7 +153,7 @@ const stockCatalogSQL = `WITH page AS (
 	  AND NOT EXISTS (
 		SELECT 1 FROM public.ic_unit_use existing
 		WHERE existing.ic_code = p.code
-		  AND COALESCE(existing.status, 0) = 0
+		  AND COALESCE(existing.status, 0) IN (0, 1)
 		  AND existing.code = p.unit_standard
 	  )
 ), barcodes AS (
