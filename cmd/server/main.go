@@ -113,6 +113,7 @@ func main() {
 	v1.GET("/ic/stock", skh.List)
 	v1.GET("/ic/stock/:code", skh.Get)
 	stockSyncHandler := handlers.NewStockSyncHandler(dbm)
+	v1.GET("/ic/stock-capabilities", stockSyncHandler.Capabilities)
 	v1.GET("/ic/stock-locations", stockSyncHandler.Locations)
 	v1.GET("/ic/stock-catalog", stockSyncHandler.Catalog)
 	v1.POST("/ic/stock-balances/batch", stockSyncHandler.BalancesBatch)

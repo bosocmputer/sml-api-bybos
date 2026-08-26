@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"net/http"
 	"sort"
 	"strconv"
@@ -26,11 +27,14 @@ import (
 )
 
 const (
-	stockBatchMaxScopes        = 20
-	stockBatchMaxItemCodes     = 50_000
-	stockBatchMaxLocationPairs = 1_000
-	stockQueryTimeout          = 10 * time.Second
-	stockLocationTimeout       = 15 * time.Second
+	stockBatchMaxScopes             = 20
+	stockBatchMaxItemCodes          = 50_000
+	stockBatchMaxLocationPairs      = 1_000
+	stockQueryTimeout               = 10 * time.Second
+	stockLocationTimeout            = 15 * time.Second
+	stockAvailabilityPhysicalV1     = "physical_v1"
+	stockAvailabilityNetSaleOrderV1 = "net_sale_order_v1"
+	stockAvailabilitySchemaVersion  = "stock-availability-v1"
 )
 
 const stockBalanceRowsSQL = `SELECT
@@ -42,7 +46,7 @@ const stockBalanceRowsSQL = `SELECT
 	COALESCE(s.name_1, ''),
 	COALESCE(b.min_qty, 0)::float8,
 	COALESCE(b.max_qty, 0)::float8,
-	COALESCE(b.balance_qty, 0)::float8,
+	COALESCE(b.balance_qty, 0)::text,
 	COALESCE(b.ic_unit_code, '')
 FROM public.sml_ic_function_stock_balance_warehouse_location($1::date, '', '', '') b
 JOIN public.ic_inventory i ON i.code = b.ic_code
@@ -55,6 +59,153 @@ WHERE COALESCE(i.status, 0) = 0
   AND COALESCE(i.item_type, 0) = 0
   AND b.ic_code = ANY($2::text[])
 ORDER BY b.ic_code, b.warehouse, b.location`
+
+// stockBalanceNetRowsSQL deliberately calculates physical stock and sales-order
+// demand in one PostgreSQL statement. PostgreSQL 11 materializes the physical
+// CTE, so the SML stock function is evaluated once per request rather than once
+// per item. Demand is reconciled at document + item + proven source scope before
+// it is aggregated for Marketplace stock.
+const stockBalanceNetRowsSQL = `WITH requested_items AS (
+	SELECT DISTINCT unnest($2::text[]) AS item_code
+), physical AS (
+	SELECT
+		b.ic_code AS item_code,
+		COALESCE(b.ic_name, '') AS item_name,
+		TRIM(COALESCE(b.warehouse, '')) AS warehouse_code,
+		COALESCE(w.name_1, '') AS warehouse_name,
+		TRIM(COALESCE(b.location, '')) AS location_code,
+		COALESCE(s.name_1, '') AS location_name,
+		SUM(COALESCE(b.min_qty, 0)) AS min_qty,
+		SUM(COALESCE(b.max_qty, 0)) AS max_qty,
+		SUM(COALESCE(b.balance_qty, 0)) AS balance_qty,
+		COALESCE(b.ic_unit_code, '') AS unit_code
+	FROM public.sml_ic_function_stock_balance_warehouse_location($1::date, '', '', '') b
+	JOIN requested_items r ON r.item_code=b.ic_code
+	JOIN public.ic_inventory i ON i.code=b.ic_code
+	LEFT JOIN public.ic_warehouse w ON w.code=TRIM(COALESCE(b.warehouse, ''))
+	LEFT JOIN public.ic_shelf s
+	  ON s.whcode=TRIM(COALESCE(b.warehouse, ''))
+	 AND s.code=TRIM(COALESCE(b.location, ''))
+	WHERE COALESCE(i.status, 0)=0 AND COALESCE(i.item_type, 0)=0
+	GROUP BY b.ic_code,b.ic_name,b.warehouse,w.name_1,b.location,s.name_1,b.ic_unit_code
+), active_so_scopes AS (
+	SELECT
+		d.doc_no,
+		d.item_code,
+		TRIM(COALESCE(d.wh_code, '')) AS warehouse_code,
+		TRIM(COALESCE(d.shelf_code, '')) AS location_code,
+		SUM(d.qty*d.stand_value/NULLIF(d.divide_value, 0)) AS ordered_base_qty
+	FROM public.ic_trans_detail d
+	JOIN public.ic_trans h
+	  ON h.trans_flag = 36 AND h.doc_no=d.doc_no AND h.doc_date=d.doc_date
+	JOIN requested_items r ON r.item_code=d.item_code
+	JOIN public.ic_inventory i ON i.code=d.item_code
+	WHERE d.trans_flag = 36 AND h.last_status=0 AND d.last_status=0
+	  AND h.doc_date<=$1::date AND d.doc_date<=$1::date
+	  AND COALESCE(i.status, 0)=0 AND COALESCE(i.item_type, 0)=0
+	  AND d.qty>=0 AND d.stand_value>0 AND d.divide_value>0
+	GROUP BY d.doc_no,d.item_code,TRIM(COALESCE(d.wh_code, '')),TRIM(COALESCE(d.shelf_code, ''))
+), active_so_totals AS (
+	SELECT doc_no,item_code,SUM(ordered_base_qty) AS ordered_base_qty,
+	       COUNT(*) AS scope_count,
+	       MIN(warehouse_code) AS warehouse_code,MIN(location_code) AS location_code
+	FROM active_so_scopes GROUP BY doc_no,item_code
+), active_fulfilled AS (
+	SELECT d.ref_doc_no AS doc_no,d.item_code,
+	       SUM(d.qty*d.stand_value/NULLIF(d.divide_value, 0)) AS fulfilled_base_qty
+	FROM public.ic_trans_detail d
+	JOIN public.ic_trans h
+	  ON h.trans_flag = 44 AND h.doc_no=d.doc_no AND h.doc_date=d.doc_date
+	JOIN active_so_totals so ON so.doc_no=d.ref_doc_no AND so.item_code=d.item_code
+	WHERE d.trans_flag = 44 AND h.last_status=0 AND d.last_status=0
+	  AND h.doc_date<=$1::date AND d.doc_date<=$1::date
+	  AND d.qty>=0 AND d.stand_value>0 AND d.divide_value>0
+	GROUP BY d.ref_doc_no,d.item_code
+), reconciled AS (
+	SELECT so.*,
+	       COALESCE(f.fulfilled_base_qty,0) AS fulfilled_base_qty,
+	       CASE
+	         WHEN COALESCE(f.fulfilled_base_qty,0)>so.ordered_base_qty THEN 'sale_order_overfulfilled_or_mislinked'
+	         WHEN COALESCE(f.fulfilled_base_qty,0)>0
+	          AND COALESCE(f.fulfilled_base_qty,0)<so.ordered_base_qty
+	          AND so.scope_count>1 THEN 'sale_order_location_ambiguous'
+	         ELSE ''
+	       END AS diagnostic
+	FROM active_so_totals so
+	LEFT JOIN active_fulfilled f USING(doc_no,item_code)
+), outstanding_scopes AS (
+	SELECT scopes.item_code,scopes.warehouse_code,scopes.location_code,
+	       SUM(CASE
+	         WHEN rec.diagnostic<>'' THEN 0
+	         WHEN rec.fulfilled_base_qty=0 THEN scopes.ordered_base_qty
+	         WHEN rec.fulfilled_base_qty>=rec.ordered_base_qty THEN 0
+	         ELSE rec.ordered_base_qty-rec.fulfilled_base_qty
+	       END) AS outstanding_qty
+	FROM active_so_scopes scopes
+	JOIN reconciled rec USING(doc_no,item_code)
+	GROUP BY scopes.item_code,scopes.warehouse_code,scopes.location_code
+), invalid_demand AS (
+	SELECT d.item_code,'invalid_sale_order_quantity_or_unit'::text AS diagnostic
+	FROM public.ic_trans_detail d
+	JOIN public.ic_trans h ON h.trans_flag = 36 AND h.doc_no=d.doc_no AND h.doc_date=d.doc_date
+	JOIN requested_items r ON r.item_code=d.item_code
+	WHERE d.trans_flag = 36 AND h.last_status=0 AND d.last_status=0
+	  AND h.doc_date<=$1::date AND d.doc_date<=$1::date
+	  AND (d.qty<0 OR d.stand_value<=0 OR d.divide_value<=0)
+	UNION ALL
+	SELECT d.item_code,'invalid_sale_fulfillment_quantity_or_unit'
+	FROM public.ic_trans_detail d
+	JOIN public.ic_trans h ON h.trans_flag = 44 AND h.doc_no=d.doc_no AND h.doc_date=d.doc_date
+	JOIN active_so_totals so ON so.doc_no=d.ref_doc_no AND so.item_code=d.item_code
+	WHERE d.trans_flag = 44 AND h.last_status=0 AND d.last_status=0
+	  AND h.doc_date<=$1::date AND d.doc_date<=$1::date
+	  AND (d.qty<0 OR d.stand_value<=0 OR d.divide_value<=0)
+), unexpected_states AS (
+	SELECT d.item_code,'unexpected_sale_order_status'::text AS diagnostic
+	FROM public.ic_trans_detail d
+	JOIN public.ic_trans h ON h.trans_flag = 36 AND h.doc_no=d.doc_no AND h.doc_date=d.doc_date
+	JOIN requested_items r ON r.item_code=d.item_code
+	WHERE d.trans_flag = 36 AND h.doc_date<=$1::date AND d.doc_date<=$1::date
+	  AND (COALESCE(h.last_status,-1) NOT IN (0,1) OR COALESCE(d.last_status,-1) NOT IN (0,1))
+), diagnostics AS (
+	SELECT item_code,diagnostic FROM reconciled WHERE diagnostic<>''
+	UNION ALL SELECT item_code,diagnostic FROM invalid_demand
+	UNION ALL SELECT item_code,diagnostic FROM unexpected_states
+), item_diagnostics AS (
+	SELECT item_code,string_agg(DISTINCT diagnostic,',' ORDER BY diagnostic) AS diagnostic
+	FROM diagnostics GROUP BY item_code
+), resources AS (
+	SELECT item_code,warehouse_code,location_code FROM physical
+	UNION
+	SELECT item_code,warehouse_code,location_code FROM outstanding_scopes
+)
+SELECT
+	r.item_code,
+	COALESCE(p.item_name,i.name_1,''),
+	r.warehouse_code,
+	COALESCE(p.warehouse_name,w.name_1,''),
+	r.location_code,
+	COALESCE(p.location_name,s.name_1,''),
+	COALESCE(p.min_qty,0)::float8,
+	COALESCE(p.max_qty,0)::float8,
+	COALESCE(p.balance_qty,0)::text,
+	COALESCE(p.unit_code,i.unit_standard,''),
+	COALESCE(o.outstanding_qty,0)::text,
+	COALESCE(d.diagnostic,''),
+	transaction_timestamp() AS source_snapshot_at
+FROM resources r
+LEFT JOIN physical p USING(item_code,warehouse_code,location_code)
+LEFT JOIN outstanding_scopes o USING(item_code,warehouse_code,location_code)
+LEFT JOIN item_diagnostics d USING(item_code)
+LEFT JOIN public.ic_inventory i ON i.code=r.item_code
+LEFT JOIN public.ic_warehouse w ON w.code=r.warehouse_code
+LEFT JOIN public.ic_shelf s ON s.whcode=r.warehouse_code AND s.code=r.location_code
+ORDER BY r.item_code,r.warehouse_code,r.location_code`
+
+const stockFunctionFingerprintSQL = `SELECT md5(pg_get_functiondef(p.oid))
+FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+WHERE n.nspname='public' AND p.proname='sml_ic_function_stock_balance_warehouse_location'
+ORDER BY p.oid LIMIT 1`
 
 const stockLocationsSQL = `SELECT
 	w.code,
@@ -224,21 +375,34 @@ type StockBalanceScopeRequest struct {
 }
 
 type StockBalanceBatchRequest struct {
-	AsOfDate string                     `json:"as_of_date"`
-	Scopes   []StockBalanceScopeRequest `json:"scopes"`
+	AsOfDate         string                     `json:"as_of_date"`
+	AvailabilityMode string                     `json:"availability_mode,omitempty"`
+	Scopes           []StockBalanceScopeRequest `json:"scopes"`
 }
 
 type StockBalanceItem struct {
-	ItemCode           string                 `json:"item_code"`
-	ItemName           string                 `json:"item_name,omitempty"`
-	UnitCode           string                 `json:"unit_code,omitempty"`
-	RawBalanceQty      float64                `json:"raw_balance_qty"`
-	BalanceQty         float64                `json:"balance_qty"`
-	ExcludedBalanceQty float64                `json:"excluded_balance_qty,omitempty"`
-	ExcludedLocations  []StockBalanceLocation `json:"excluded_locations,omitempty"`
-	MinQty             float64                `json:"min_qty"`
-	MaxQty             float64                `json:"max_qty"`
-	NegativeClamped    bool                   `json:"negative_clamped,omitempty"`
+	ItemCode                      string                 `json:"item_code"`
+	ItemName                      string                 `json:"item_name,omitempty"`
+	UnitCode                      string                 `json:"unit_code,omitempty"`
+	RawBalanceQty                 float64                `json:"raw_balance_qty"`
+	BalanceQty                    float64                `json:"balance_qty"`
+	PhysicalBalanceQty            float64                `json:"physical_balance_qty,omitempty"`
+	OutstandingSalesOrderQty      float64                `json:"outstanding_sales_order_qty,omitempty"`
+	AvailableBalanceQty           float64                `json:"available_balance_qty,omitempty"`
+	PhysicalBalanceQtyExact       string                 `json:"physical_balance_qty_exact,omitempty"`
+	OutstandingSalesOrderQtyExact string                 `json:"outstanding_sales_order_qty_exact,omitempty"`
+	AvailableBalanceQtyExact      string                 `json:"available_balance_qty_exact,omitempty"`
+	BalanceQtyExact               string                 `json:"balance_qty_exact,omitempty"`
+	AvailabilityStatus            string                 `json:"availability_status,omitempty"`
+	AvailabilityReason            string                 `json:"availability_reason,omitempty"`
+	ExcludedBalanceQty            float64                `json:"excluded_balance_qty,omitempty"`
+	ExcludedLocations             []StockBalanceLocation `json:"excluded_locations,omitempty"`
+	MinQty                        float64                `json:"min_qty"`
+	MaxQty                        float64                `json:"max_qty"`
+	NegativeClamped               bool                   `json:"negative_clamped,omitempty"`
+	physicalExact                 *big.Rat
+	outstandingExact              *big.Rat
+	exactError                    error
 }
 
 // StockBalanceLocation explains balances outside a selected scope without
@@ -260,9 +424,21 @@ type StockBalanceScopeResult struct {
 }
 
 type StockBalanceBatchResponse struct {
-	AsOfDate  string                    `json:"as_of_date"`
-	Scopes    []StockBalanceScopeResult `json:"scopes"`
-	CheckedAt string                    `json:"checked_at"`
+	AsOfDate                   string                    `json:"as_of_date"`
+	Scopes                     []StockBalanceScopeResult `json:"scopes"`
+	CheckedAt                  string                    `json:"checked_at"`
+	ModeApplied                string                    `json:"mode_applied,omitempty"`
+	SchemaVersion              string                    `json:"schema_version,omitempty"`
+	SourceSnapshotAt           string                    `json:"source_snapshot_at,omitempty"`
+	SourceSemanticsFingerprint string                    `json:"source_semantics_fingerprint,omitempty"`
+}
+
+type StockCapabilities struct {
+	AvailabilityModes          []string `json:"availability_modes"`
+	SchemaVersion              string   `json:"schema_version"`
+	SourceSemanticsFingerprint string   `json:"source_semantics_fingerprint"`
+	DecimalQuantityFormat      string   `json:"decimal_quantity_format"`
+	MaxItemCodes               int      `json:"max_item_codes"`
 }
 
 type StockCatalogUnit struct {
@@ -315,6 +491,28 @@ func NewStockSyncHandler(dbm *db.Manager) *StockSyncHandler {
 		},
 		global: make(chan struct{}, 5),
 	}
+}
+
+func (h *StockSyncHandler) Capabilities(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), stockQueryTimeout)
+	defer cancel()
+	pool, err := h.getPool(ctx, c.GetString(middleware.TenantKey))
+	if err != nil {
+		api.Internal(c, "db_pool_error", "connect to SML database failed", err.Error())
+		return
+	}
+	fingerprint, err := stockSourceFingerprint(ctx, pool)
+	if err != nil {
+		api.Internal(c, "stock_capability_failed", "inspect stock source capability failed", err.Error())
+		return
+	}
+	api.OK(c, StockCapabilities{
+		AvailabilityModes:          []string{stockAvailabilityPhysicalV1, stockAvailabilityNetSaleOrderV1},
+		SchemaVersion:              stockAvailabilitySchemaVersion,
+		SourceSemanticsFingerprint: fingerprint,
+		DecimalQuantityFormat:      "string",
+		MaxItemCodes:               stockBatchMaxItemCodes,
+	})
 }
 
 func (h *StockSyncHandler) BalancesBatch(c *gin.Context) {
@@ -533,6 +731,13 @@ func normalizeStockBatchRequest(req StockBalanceBatchRequest) (StockBalanceBatch
 	if len(req.Scopes) == 0 || len(req.Scopes) > stockBatchMaxScopes {
 		return StockBalanceBatchRequest{}, nil, fmt.Errorf("scopes must contain 1-%d entries", stockBatchMaxScopes)
 	}
+	req.AvailabilityMode = strings.ToLower(strings.TrimSpace(req.AvailabilityMode))
+	if req.AvailabilityMode == "" {
+		req.AvailabilityMode = stockAvailabilityPhysicalV1
+	}
+	if req.AvailabilityMode != stockAvailabilityPhysicalV1 && req.AvailabilityMode != stockAvailabilityNetSaleOrderV1 {
+		return StockBalanceBatchRequest{}, nil, fmt.Errorf("availability_mode must be %s or %s", stockAvailabilityPhysicalV1, stockAvailabilityNetSaleOrderV1)
+	}
 	uniqueItems := map[string]struct{}{}
 	uniqueScopes := map[string]struct{}{}
 	locationCount := 0
@@ -599,16 +804,21 @@ func normalizeStockBatchRequest(req StockBalanceBatchRequest) (StockBalanceBatch
 }
 
 type stockBalanceRow struct {
-	ItemCode      string
-	ItemName      string
-	WarehouseCode string
-	WarehouseName string
-	LocationCode  string
-	LocationName  string
-	MinQty        float64
-	MaxQty        float64
-	BalanceQty    float64
-	UnitCode      string
+	ItemCode            string
+	ItemName            string
+	WarehouseCode       string
+	WarehouseName       string
+	LocationCode        string
+	LocationName        string
+	MinQty              float64
+	MaxQty              float64
+	BalanceQty          float64
+	BalanceQtyExact     string
+	OutstandingQty      float64
+	OutstandingQtyExact string
+	UnitCode            string
+	Diagnostic          string
+	SourceSnapshotAt    time.Time
 }
 
 type stockBalanceScopeState struct {
@@ -634,6 +844,14 @@ func newStockBalanceScopeState(scope StockBalanceScopeRequest) stockBalanceScope
 }
 
 func accumulateStockBalanceRow(states []stockBalanceScopeState, row stockBalanceRow) {
+	physicalText := strings.TrimSpace(row.BalanceQtyExact)
+	if physicalText == "" {
+		physicalText = strconv.FormatFloat(row.BalanceQty, 'f', -1, 64)
+	}
+	outstandingText := strings.TrimSpace(row.OutstandingQtyExact)
+	if outstandingText == "" {
+		outstandingText = strconv.FormatFloat(row.OutstandingQty, 'f', -1, 64)
+	}
 	key := locationKey(row.WarehouseCode, row.LocationCode)
 	for i := range states {
 		item := states[i].items[row.ItemCode]
@@ -648,6 +866,18 @@ func accumulateStockBalanceRow(states []stockBalanceScopeState, row stockBalance
 		}
 		if included {
 			item.RawBalanceQty += row.BalanceQty
+			item.PhysicalBalanceQty += row.BalanceQty
+			item.OutstandingSalesOrderQty += row.OutstandingQty
+			if err := addExactQuantity(&item.physicalExact, physicalText); err != nil && item.exactError == nil {
+				item.exactError = fmt.Errorf("physical quantity for %s: %w", row.ItemCode, err)
+			}
+			if err := addExactQuantity(&item.outstandingExact, outstandingText); err != nil && item.exactError == nil {
+				item.exactError = fmt.Errorf("outstanding quantity for %s: %w", row.ItemCode, err)
+			}
+			if row.Diagnostic != "" {
+				item.AvailabilityStatus = "blocked"
+				item.AvailabilityReason = appendDiagnostic(item.AvailabilityReason, row.Diagnostic)
+			}
 			item.MinQty += row.MinQty
 			item.MaxQty += row.MaxQty
 			continue
@@ -682,6 +912,150 @@ func accumulateStockBalanceRow(states []stockBalanceScopeState, row stockBalance
 	}
 }
 
+func finalizeStockBalanceItem(item *StockBalanceItem, mode string) (*StockBalanceItem, error) {
+	if item == nil {
+		return nil, errors.New("stock balance item is missing")
+	}
+	if item.exactError != nil {
+		return nil, item.exactError
+	}
+	if item.physicalExact == nil {
+		item.physicalExact = new(big.Rat)
+	}
+	if item.outstandingExact == nil {
+		item.outstandingExact = new(big.Rat)
+	}
+	physical := new(big.Rat).Set(item.physicalExact)
+	outstanding := new(big.Rat).Set(item.outstandingExact)
+	available := new(big.Rat).Set(physical)
+	if mode == stockAvailabilityNetSaleOrderV1 {
+		available.Sub(available, outstanding)
+	}
+	item.PhysicalBalanceQtyExact = decimalRatString(physical)
+	item.OutstandingSalesOrderQtyExact = decimalRatString(outstanding)
+	if available.Sign() < 0 {
+		available.SetInt64(0)
+		reason := "negative_physical_balance"
+		if outstanding.Sign() > 0 {
+			reason = "outstanding_exceeds_physical"
+		}
+		item.AvailabilityReason = appendDiagnostic(item.AvailabilityReason, reason)
+		if item.AvailabilityStatus == "" {
+			item.AvailabilityStatus = "warning"
+		}
+	}
+	if physical.Sign() < 0 {
+		item.NegativeClamped = true
+	}
+	item.AvailableBalanceQtyExact = decimalRatString(available)
+	item.BalanceQtyExact = item.AvailableBalanceQtyExact
+	item.PhysicalBalanceQty = ratFloat64(physical)
+	item.OutstandingSalesOrderQty = ratFloat64(outstanding)
+	item.AvailableBalanceQty = ratFloat64(available)
+	item.RawBalanceQty = item.PhysicalBalanceQty
+	item.BalanceQty = item.AvailableBalanceQty
+	if mode == stockAvailabilityPhysicalV1 {
+		item.OutstandingSalesOrderQty = 0
+		item.OutstandingSalesOrderQtyExact = "0"
+		item.AvailableBalanceQty = math.Max(item.PhysicalBalanceQty, 0)
+		item.AvailableBalanceQtyExact = decimalRatString(nonNegativeRat(physical))
+		item.BalanceQty = item.AvailableBalanceQty
+		item.BalanceQtyExact = item.AvailableBalanceQtyExact
+	}
+	if item.AvailabilityStatus == "blocked" {
+		item.BalanceQty = 0
+		item.BalanceQtyExact = "0"
+	} else if item.AvailabilityStatus == "" {
+		item.AvailabilityStatus = "ready"
+	}
+	return item, nil
+}
+
+func addExactQuantity(target **big.Rat, raw string) error {
+	value := new(big.Rat)
+	if _, ok := value.SetString(strings.TrimSpace(raw)); !ok {
+		return fmt.Errorf("invalid decimal %q", raw)
+	}
+	if *target == nil {
+		*target = new(big.Rat)
+	}
+	(*target).Add(*target, value)
+	return nil
+}
+
+func nonNegativeRat(value *big.Rat) *big.Rat {
+	result := new(big.Rat).Set(value)
+	if result.Sign() < 0 {
+		result.SetInt64(0)
+	}
+	return result
+}
+
+func ratFloat64(value *big.Rat) float64 {
+	result, _ := value.Float64()
+	return result
+}
+
+func decimalRatString(value *big.Rat) string {
+	if value == nil || value.Sign() == 0 {
+		return "0"
+	}
+	denominator := new(big.Int).Set(value.Denom())
+	two := big.NewInt(2)
+	five := big.NewInt(5)
+	remainder := new(big.Int)
+	twos, fives := 0, 0
+	for {
+		quotient := new(big.Int)
+		quotient.QuoRem(denominator, two, remainder)
+		if remainder.Sign() != 0 {
+			break
+		}
+		denominator = quotient
+		twos++
+	}
+	for {
+		quotient := new(big.Int)
+		quotient.QuoRem(denominator, five, remainder)
+		if remainder.Sign() != 0 {
+			break
+		}
+		denominator = quotient
+		fives++
+	}
+	if denominator.Cmp(big.NewInt(1)) != 0 {
+		return trimDecimalZeros(value.FloatString(18))
+	}
+	scale := twos
+	if fives > scale {
+		scale = fives
+	}
+	return trimDecimalZeros(value.FloatString(scale))
+}
+
+func trimDecimalZeros(value string) string {
+	if !strings.Contains(value, ".") {
+		return value
+	}
+	return strings.TrimRight(strings.TrimRight(value, "0"), ".")
+}
+
+func appendDiagnostic(current, next string) string {
+	values := map[string]struct{}{}
+	for _, part := range strings.Split(current+","+next, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values[part] = struct{}{}
+		}
+	}
+	keys := make([]string, 0, len(values))
+	for value := range values {
+		keys = append(keys, value)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ",")
+}
+
 func sortedNonZeroStockLocations(values map[string]*StockBalanceLocation) []StockBalanceLocation {
 	keys := make([]string, 0, len(values))
 	for key, value := range values {
@@ -703,27 +1077,70 @@ func calculateStockScopes(ctx context.Context, pool stockSyncQuerier, req StockB
 	for i, scope := range req.Scopes {
 		states[i] = newStockBalanceScopeState(scope)
 	}
-	rows, err := pool.Query(ctx, stockBalanceRowsSQL, asOfDate, itemCodes)
+	query := stockBalanceRowsSQL
+	fingerprint := ""
+	if req.AvailabilityMode == stockAvailabilityNetSaleOrderV1 {
+		query = stockBalanceNetRowsSQL
+		var err error
+		fingerprint, err = stockSourceFingerprint(ctx, pool)
+		if err != nil {
+			return nil, fmt.Errorf("inspect stock semantics: %w", err)
+		}
+	}
+	rows, err := pool.Query(ctx, query, asOfDate, itemCodes)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	var sourceSnapshot time.Time
 	for rows.Next() {
 		var row stockBalanceRow
-		if err := rows.Scan(
-			&row.ItemCode, &row.ItemName,
-			&row.WarehouseCode, &row.WarehouseName,
-			&row.LocationCode, &row.LocationName,
-			&row.MinQty, &row.MaxQty, &row.BalanceQty, &row.UnitCode,
-		); err != nil {
-			return nil, err
+		if req.AvailabilityMode == stockAvailabilityNetSaleOrderV1 {
+			if err := rows.Scan(
+				&row.ItemCode, &row.ItemName,
+				&row.WarehouseCode, &row.WarehouseName,
+				&row.LocationCode, &row.LocationName,
+				&row.MinQty, &row.MaxQty, &row.BalanceQtyExact, &row.UnitCode,
+				&row.OutstandingQtyExact, &row.Diagnostic, &row.SourceSnapshotAt,
+			); err != nil {
+				return nil, err
+			}
+			sourceSnapshot = row.SourceSnapshotAt
+		} else {
+			if err := rows.Scan(
+				&row.ItemCode, &row.ItemName,
+				&row.WarehouseCode, &row.WarehouseName,
+				&row.LocationCode, &row.LocationName,
+				&row.MinQty, &row.MaxQty, &row.BalanceQtyExact, &row.UnitCode,
+			); err != nil {
+				return nil, err
+			}
+		}
+		if row.BalanceQty, err = strconv.ParseFloat(row.BalanceQtyExact, 64); err != nil {
+			return nil, fmt.Errorf("invalid physical stock decimal for %s: %w", row.ItemCode, err)
+		}
+		if row.OutstandingQtyExact != "" {
+			if row.OutstandingQty, err = strconv.ParseFloat(row.OutstandingQtyExact, 64); err != nil {
+				return nil, fmt.Errorf("invalid outstanding stock decimal for %s: %w", row.ItemCode, err)
+			}
 		}
 		accumulateStockBalanceRow(states, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	response := &StockBalanceBatchResponse{AsOfDate: req.AsOfDate, CheckedAt: time.Now().UTC().Format(time.RFC3339)}
+	response := &StockBalanceBatchResponse{
+		AsOfDate: req.AsOfDate, CheckedAt: time.Now().UTC().Format(time.RFC3339), ModeApplied: req.AvailabilityMode,
+	}
+	if req.AvailabilityMode == stockAvailabilityNetSaleOrderV1 {
+		response.SchemaVersion = stockAvailabilitySchemaVersion
+		response.SourceSemanticsFingerprint = fingerprint
+		if !sourceSnapshot.IsZero() {
+			response.SourceSnapshotAt = sourceSnapshot.UTC().Format(time.RFC3339Nano)
+		} else {
+			response.SourceSnapshotAt = response.CheckedAt
+		}
+	}
 	response.Scopes = make([]StockBalanceScopeResult, 0, len(states))
 	for _, state := range states {
 		result := StockBalanceScopeResult{
@@ -735,16 +1152,27 @@ func calculateStockScopes(ctx context.Context, pool stockSyncQuerier, req StockB
 			if state.request.IncludeItemExcludedLocations {
 				item.ExcludedLocations = sortedNonZeroStockLocations(state.itemExcludedLocations[code])
 			}
-			item.BalanceQty = item.RawBalanceQty
-			if item.BalanceQty < 0 {
-				item.BalanceQty = 0
-				item.NegativeClamped = true
+			finalized, err := finalizeStockBalanceItem(item, req.AvailabilityMode)
+			if err != nil {
+				return nil, err
 			}
-			result.Items = append(result.Items, *item)
+			result.Items = append(result.Items, *finalized)
 		}
 		response.Scopes = append(response.Scopes, result)
 	}
 	return response, nil
+}
+
+func stockSourceFingerprint(ctx context.Context, pool stockSyncQuerier) (string, error) {
+	var functionMD5 string
+	if err := pool.QueryRow(ctx, stockFunctionFingerprintSQL).Scan(&functionMD5); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(functionMD5) == "" {
+		return "", errors.New("SML stock function fingerprint is missing")
+	}
+	sum := sha256.Sum256([]byte(functionMD5 + "\n" + stockAvailabilitySchemaVersion + "\n" + stockBalanceNetRowsSQL))
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func (h *StockSyncHandler) acquire(ctx context.Context, tenant string) (func(), error) {

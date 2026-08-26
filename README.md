@@ -275,6 +275,7 @@ Set-product fields เป็น contract กลางแบบ tenant-generic �
 | `GET` | `/api/v1/ic/stock/:code` | ยอดคงเหลือสต๊อกตาม item code |
 | `GET` | `/api/v1/ic/stock-locations` | คลัง/พื้นที่ active พร้อมยอด orphan/blank สำหรับตรวจ config |
 | `GET` | `/api/v1/ic/stock-catalog` | สินค้า stock active พร้อม barcode และหน่วย; ส่ง `include_sets=true` เพื่อ opt in สินค้าชุด |
+| `GET` | `/api/v1/ic/stock-capabilities` | availability modes, exact-decimal contract และ tenant source fingerprint |
 | `POST` | `/api/v1/ic/stock-balances/batch` | คำนวณยอดหลาย warehouse scope แบบ parameterized สำหรับ marketplace stock sync |
 
 `stock-balances/batch` จำกัด 20 scopes, 50,000 item codes และ 1,000
@@ -286,6 +287,12 @@ warehouse/location pairs ต่อ request ระบบเรียก stock fun
 แต่ละ item จะคืน breakdown เดียวกันใน `items[].excluded_locations` สำหรับ UI
 ระดับสินค้า ฟิลด์นี้เป็น opt-in เพื่อไม่เพิ่ม payload ให้ consumer อื่นของ shared
 service ยอดดังกล่าวเป็นข้อมูลประกอบและไม่รวมใน `balance_qty`
+
+เมื่อไม่ส่ง `availability_mode`, `stock-balances/batch` ใช้ `physical_v1` เพื่อคง
+behavior เดิม หลัง client ผ่าน capability handshake แล้วจึงเลือก
+`net_sale_order_v1` เพื่อหักใบสั่งขาย SML `TRANS_FLAG=36` ที่ยังส่งไม่ครบ
+response net mode มี exact decimal strings, source snapshot/fingerprint และ
+diagnostic ที่ fail closed เมื่อ document chain หรือ location กำกวม
 
 ### Warehouses
 
