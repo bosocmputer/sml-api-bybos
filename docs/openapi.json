@@ -4355,6 +4355,18 @@
         }
       }
     },
+    "/api/v1/ic/stock-demand-evidence/batch": {
+      "post": {
+        "tags": ["Stock"],
+        "summary": "Verify exact SML document demand before releasing reservations",
+        "description": "Bounded internal endpoint. Verifies active saleorder (TRANS_FLAG 36) or saleinvoice (TRANS_FLAG 44) lines by document, item, warehouse, location, and exact base quantity. Returns immutable evidence hashes and the tenant source fingerprint.",
+        "responses": {
+          "200": {"description": "Per-line verified, missing, or mismatch evidence"},
+          "400": {"description": "Invalid or oversized evidence batch", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "500": {"description": "SML evidence query error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/ic/stock-balances/batch": {
       "post": {
         "tags": ["Stock"],

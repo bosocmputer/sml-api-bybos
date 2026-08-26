@@ -144,6 +144,32 @@ func TestStockBalanceNetSQLUsesOneSnapshotAndValidatedDocumentStates(t *testing.
 	}
 }
 
+func TestNormalizeStockDemandEvidenceRequiresUniqueExactLines(t *testing.T) {
+	request, err := normalizeStockDemandEvidenceRequest(StockDemandEvidenceBatchRequest{Lines: []StockDemandEvidenceRequestLine{{
+		EvidenceID: "reservation-1:item-A", DocNo: "SO-2607-0010", Route: "SaleOrder",
+		ItemCode: "A", WarehouseCode: "W1", LocationCode: "S1", ExpectedBaseQtyExact: "48.000",
+	}}})
+	if err != nil {
+		t.Fatalf("normalize evidence: %v", err)
+	}
+	if request.Lines[0].Route != "saleorder" || request.Lines[0].TransFlag != 36 || request.Lines[0].ExpectedBaseQtyExact != "48.000" {
+		t.Fatalf("normalized=%+v", request.Lines[0])
+	}
+	request.Lines = append(request.Lines, request.Lines[0])
+	if _, err := normalizeStockDemandEvidenceRequest(request); err == nil {
+		t.Fatal("duplicate evidence identity must fail")
+	}
+}
+
+func TestStockDemandEvidenceSQLIsScopeAndDocumentExact(t *testing.T) {
+	lower := strings.ToLower(stockDemandEvidenceSQL)
+	for _, fragment := range []string{"jsonb_to_recordset", "d.doc_no=r.doc_no", "d.item_code=r.item_code", "d.wh_code", "d.shelf_code", "d.trans_flag=r.trans_flag", "stand_value", "divide_value", "transaction_timestamp"} {
+		if !strings.Contains(lower, fragment) {
+			t.Fatalf("evidence query missing %q", fragment)
+		}
+	}
+}
+
 func TestNormalizeStockBatchRejectsUnsafeOrAmbiguousScope(t *testing.T) {
 	tests := []struct {
 		name string

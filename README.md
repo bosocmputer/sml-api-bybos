@@ -277,6 +277,7 @@ Set-product fields เป็น contract กลางแบบ tenant-generic �
 | `GET` | `/api/v1/ic/stock-catalog` | สินค้า stock active พร้อม barcode และหน่วย; ส่ง `include_sets=true` เพื่อ opt in สินค้าชุด |
 | `GET` | `/api/v1/ic/stock-capabilities` | availability modes, exact-decimal contract และ tenant source fingerprint |
 | `POST` | `/api/v1/ic/stock-balances/batch` | คำนวณยอดหลาย warehouse scope แบบ parameterized สำหรับ marketplace stock sync |
+| `POST` | `/api/v1/ic/stock-demand-evidence/batch` | ยืนยันเอกสาร SML/สินค้า/scope/จำนวน exact ก่อนปล่อย reservation |
 
 `stock-balances/batch` จำกัด 20 scopes, 50,000 item codes และ 1,000
 warehouse/location pairs ต่อ request ระบบเรียก stock function โดยส่ง filter ว่าง
@@ -293,6 +294,12 @@ behavior เดิม หลัง client ผ่าน capability handshake แ�
 `net_sale_order_v1` เพื่อหักใบสั่งขาย SML `TRANS_FLAG=36` ที่ยังส่งไม่ครบ
 response net mode มี exact decimal strings, source snapshot/fingerprint และ
 diagnostic ที่ fail closed เมื่อ document chain หรือ location กำกวม
+
+`stock-demand-evidence/batch` จำกัด 100 เอกสารและ 500 รายการต่อ request รองรับ
+`saleorder` (`TRANS_FLAG=36`) และ `saleinvoice` (`TRANS_FLAG=44`) และคืนสถานะ
+`verified` เฉพาะเมื่อ doc no, item, warehouse, location และ exact base quantity
+ตรงกับเอกสาร active ใน SML ทั้งหมด Client ต้องเก็บ evidence hash/source snapshot
+ก่อนเปลี่ยน reservation เป็น incorporated
 
 ### Warehouses
 

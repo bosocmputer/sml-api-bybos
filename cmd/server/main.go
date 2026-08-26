@@ -117,6 +117,7 @@ func main() {
 	v1.GET("/ic/stock-locations", stockSyncHandler.Locations)
 	v1.GET("/ic/stock-catalog", stockSyncHandler.Catalog)
 	v1.POST("/ic/stock-balances/batch", stockSyncHandler.BalancesBatch)
+	v1.POST("/ic/stock-demand-evidence/batch", stockSyncHandler.DemandEvidenceBatch)
 
 	// Write — sale orders, invoices, purchase orders, products
 	cw := compat.NewWriteHandler(dbm, logger)

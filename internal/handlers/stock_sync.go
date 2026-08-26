@@ -207,6 +207,34 @@ FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
 WHERE n.nspname='public' AND p.proname='sml_ic_function_stock_balance_warehouse_location'
 ORDER BY p.oid LIMIT 1`
 
+const stockDemandEvidenceSQL = `WITH requested AS (
+	SELECT evidence_id,doc_no,trans_flag,item_code,warehouse_code,location_code,expected_base_qty_exact
+	FROM jsonb_to_recordset($1::jsonb) AS r(
+		evidence_id text,doc_no text,trans_flag integer,item_code text,
+		warehouse_code text,location_code text,expected_base_qty_exact text
+	)
+)
+SELECT
+	r.evidence_id,r.doc_no,r.trans_flag,r.item_code,r.warehouse_code,r.location_code,r.expected_base_qty_exact,
+	COALESCE(SUM(CASE WHEN h.last_status=0 AND d.last_status=0
+		AND d.qty>=0 AND d.stand_value>0 AND d.divide_value>0
+		THEN d.qty*d.stand_value/d.divide_value END),0)::text AS actual_base_qty_exact,
+	COUNT(d.*) FILTER (WHERE h.last_status=0 AND d.last_status=0)::int AS active_line_count,
+	COUNT(d.*) FILTER (WHERE h.last_status=0 AND d.last_status=0
+		AND (d.qty<0 OR d.stand_value<=0 OR d.divide_value<=0))::int AS invalid_line_count,
+	COUNT(DISTINCT h.doc_date)::int AS document_date_count,
+	transaction_timestamp() AS source_snapshot_at
+FROM requested r
+LEFT JOIN public.ic_trans_detail d
+	ON d.doc_no=r.doc_no AND d.item_code=r.item_code
+	AND TRIM(COALESCE(d.wh_code,''))=r.warehouse_code
+	AND TRIM(COALESCE(d.shelf_code,''))=r.location_code
+	AND d.trans_flag=r.trans_flag
+LEFT JOIN public.ic_trans h
+	ON h.doc_no=d.doc_no AND h.doc_date=d.doc_date AND h.trans_flag=r.trans_flag
+GROUP BY r.evidence_id,r.doc_no,r.trans_flag,r.item_code,r.warehouse_code,r.location_code,r.expected_base_qty_exact
+ORDER BY r.evidence_id`
+
 const stockLocationsSQL = `SELECT
 	w.code,
 	COALESCE(w.name_1, ''),
@@ -441,6 +469,42 @@ type StockCapabilities struct {
 	MaxItemCodes               int      `json:"max_item_codes"`
 }
 
+type StockDemandEvidenceRequestLine struct {
+	EvidenceID           string `json:"evidence_id"`
+	DocNo                string `json:"doc_no"`
+	Route                string `json:"route"`
+	TransFlag            int    `json:"trans_flag,omitempty"`
+	ItemCode             string `json:"item_code"`
+	WarehouseCode        string `json:"warehouse_code"`
+	LocationCode         string `json:"location_code"`
+	ExpectedBaseQtyExact string `json:"expected_base_qty_exact"`
+}
+
+type StockDemandEvidenceBatchRequest struct {
+	Lines []StockDemandEvidenceRequestLine `json:"lines"`
+}
+
+type StockDemandEvidenceResultLine struct {
+	EvidenceID           string `json:"evidence_id"`
+	DocNo                string `json:"doc_no"`
+	Route                string `json:"route"`
+	ItemCode             string `json:"item_code"`
+	WarehouseCode        string `json:"warehouse_code"`
+	LocationCode         string `json:"location_code"`
+	ExpectedBaseQtyExact string `json:"expected_base_qty_exact"`
+	ActualBaseQtyExact   string `json:"actual_base_qty_exact"`
+	Status               string `json:"status"`
+	Reason               string `json:"reason,omitempty"`
+	EvidenceHash         string `json:"evidence_hash"`
+}
+
+type StockDemandEvidenceBatchResponse struct {
+	SchemaVersion              string                          `json:"schema_version"`
+	SourceSemanticsFingerprint string                          `json:"source_semantics_fingerprint"`
+	SourceSnapshotAt           string                          `json:"source_snapshot_at"`
+	Lines                      []StockDemandEvidenceResultLine `json:"lines"`
+}
+
 type StockCatalogUnit struct {
 	Code        string  `json:"code"`
 	Name        string  `json:"name"`
@@ -556,6 +620,103 @@ func (h *StockSyncHandler) BalancesBatch(c *gin.Context) {
 		return
 	}
 	api.OK(c, result)
+}
+
+func (h *StockSyncHandler) DemandEvidenceBatch(c *gin.Context) {
+	var req StockDemandEvidenceBatchRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(c.Writer, c.Request.Body, 2<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		api.BadRequest(c, "invalid_stock_evidence_request", "stock demand evidence request is invalid", nil)
+		return
+	}
+	normalized, err := normalizeStockDemandEvidenceRequest(req)
+	if err != nil {
+		api.BadRequest(c, "invalid_stock_evidence_request", err.Error(), nil)
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), stockQueryTimeout)
+	defer cancel()
+	tenant := c.GetString(middleware.TenantKey)
+	release, err := h.acquire(ctx, tenant)
+	if err != nil {
+		api.Error(c, http.StatusGatewayTimeout, "stock_evidence_timeout", "stock evidence timed out", nil)
+		return
+	}
+	defer release()
+	pool, err := h.getPool(ctx, tenant)
+	if err != nil {
+		api.Internal(c, "db_pool_error", "connect to SML database failed", err.Error())
+		return
+	}
+	fingerprint, err := stockSourceFingerprint(ctx, pool)
+	if err != nil {
+		api.Internal(c, "stock_evidence_capability_failed", "inspect stock source capability failed", err.Error())
+		return
+	}
+	payload, err := json.Marshal(normalized.Lines)
+	if err != nil {
+		api.Internal(c, "stock_evidence_encode_failed", "encode stock evidence request failed", err.Error())
+		return
+	}
+	rows, err := pool.Query(ctx, stockDemandEvidenceSQL, payload)
+	if err != nil {
+		api.Internal(c, "stock_evidence_query_failed", "verify stock demand evidence failed", err.Error())
+		return
+	}
+	defer rows.Close()
+	response := StockDemandEvidenceBatchResponse{
+		SchemaVersion: "stock-demand-evidence-v1", SourceSemanticsFingerprint: fingerprint,
+		Lines: make([]StockDemandEvidenceResultLine, 0, len(normalized.Lines)),
+	}
+	for rows.Next() {
+		var result StockDemandEvidenceResultLine
+		var transFlag, activeLines, invalidLines, documentDates int
+		var snapshot time.Time
+		if err := rows.Scan(
+			&result.EvidenceID, &result.DocNo, &transFlag, &result.ItemCode, &result.WarehouseCode, &result.LocationCode,
+			&result.ExpectedBaseQtyExact, &result.ActualBaseQtyExact, &activeLines, &invalidLines, &documentDates, &snapshot,
+		); err != nil {
+			api.Internal(c, "stock_evidence_scan_failed", "read stock demand evidence failed", err.Error())
+			return
+		}
+		if transFlag == 36 {
+			result.Route = "saleorder"
+		} else {
+			result.Route = "saleinvoice"
+		}
+		result.Status = "mismatch"
+		switch {
+		case documentDates > 1:
+			result.Reason = "ambiguous_document_identity"
+		case invalidLines > 0:
+			result.Reason = "invalid_document_quantity_or_unit"
+		case activeLines == 0:
+			result.Status = "missing"
+			result.Reason = "active_document_line_missing"
+		default:
+			expected, expectedOK := new(big.Rat).SetString(result.ExpectedBaseQtyExact)
+			actual, actualOK := new(big.Rat).SetString(result.ActualBaseQtyExact)
+			if expectedOK && actualOK && expected.Cmp(actual) == 0 {
+				result.Status = "verified"
+			} else {
+				result.Reason = "document_quantity_mismatch"
+			}
+		}
+		hashInput := strings.Join([]string{
+			result.EvidenceID, result.DocNo, result.Route, result.ItemCode, result.WarehouseCode, result.LocationCode,
+			result.ExpectedBaseQtyExact, result.ActualBaseQtyExact, result.Status, result.Reason, fingerprint, snapshot.UTC().Format(time.RFC3339Nano),
+		}, "\x1f")
+		hash := sha256.Sum256([]byte(hashInput))
+		result.EvidenceHash = "sha256:" + hex.EncodeToString(hash[:])
+		response.SourceSnapshotAt = snapshot.UTC().Format(time.RFC3339Nano)
+		response.Lines = append(response.Lines, result)
+	}
+	if err := rows.Err(); err != nil {
+		api.Internal(c, "stock_evidence_query_failed", "verify stock demand evidence failed", err.Error())
+		return
+	}
+	api.OK(c, response)
 }
 
 func (h *StockSyncHandler) Locations(c *gin.Context) {
@@ -801,6 +962,52 @@ func normalizeStockBatchRequest(req StockBalanceBatchRequest) (StockBalanceBatch
 	}
 	req.AsOfDate = date.Format("2006-01-02")
 	return req, sortedKeys(uniqueItems), nil
+}
+
+func normalizeStockDemandEvidenceRequest(req StockDemandEvidenceBatchRequest) (StockDemandEvidenceBatchRequest, error) {
+	if len(req.Lines) == 0 || len(req.Lines) > 500 {
+		return StockDemandEvidenceBatchRequest{}, errors.New("lines must contain 1-500 entries")
+	}
+	identities := make(map[string]struct{}, len(req.Lines))
+	documents := map[string]struct{}{}
+	for index := range req.Lines {
+		line := &req.Lines[index]
+		line.EvidenceID = strings.TrimSpace(line.EvidenceID)
+		line.DocNo = strings.TrimSpace(line.DocNo)
+		line.Route = strings.ToLower(strings.TrimSpace(line.Route))
+		line.ItemCode = strings.TrimSpace(line.ItemCode)
+		line.WarehouseCode = strings.TrimSpace(line.WarehouseCode)
+		line.LocationCode = strings.TrimSpace(line.LocationCode)
+		line.ExpectedBaseQtyExact = strings.TrimSpace(line.ExpectedBaseQtyExact)
+		if line.EvidenceID == "" || len(line.EvidenceID) > 200 || line.DocNo == "" || len(line.DocNo) > 100 ||
+			line.ItemCode == "" || len(line.ItemCode) > 100 || line.WarehouseCode == "" || len(line.WarehouseCode) > 100 ||
+			line.LocationCode == "" || len(line.LocationCode) > 100 ||
+			strings.ContainsAny(line.EvidenceID+line.DocNo+line.ItemCode+line.WarehouseCode+line.LocationCode, "\x00\r\n") {
+			return StockDemandEvidenceBatchRequest{}, fmt.Errorf("line %d contains an invalid identity or stock scope", index+1)
+		}
+		switch line.Route {
+		case "saleorder":
+			line.TransFlag = 36
+		case "saleinvoice":
+			line.TransFlag = 44
+		default:
+			return StockDemandEvidenceBatchRequest{}, fmt.Errorf("line %d route must be saleorder or saleinvoice", index+1)
+		}
+		expected, ok := new(big.Rat).SetString(line.ExpectedBaseQtyExact)
+		if !ok || expected.Sign() <= 0 {
+			return StockDemandEvidenceBatchRequest{}, fmt.Errorf("line %d expected_base_qty_exact must be a positive decimal", index+1)
+		}
+		if _, exists := identities[line.EvidenceID]; exists {
+			return StockDemandEvidenceBatchRequest{}, fmt.Errorf("duplicate evidence_id %q", line.EvidenceID)
+		}
+		identities[line.EvidenceID] = struct{}{}
+		documents[line.Route+"\x00"+line.DocNo] = struct{}{}
+	}
+	if len(documents) > 100 {
+		return StockDemandEvidenceBatchRequest{}, errors.New("request exceeds 100 documents")
+	}
+	sort.Slice(req.Lines, func(i, j int) bool { return req.Lines[i].EvidenceID < req.Lines[j].EvidenceID })
+	return req, nil
 }
 
 type stockBalanceRow struct {
