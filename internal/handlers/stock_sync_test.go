@@ -136,6 +136,8 @@ func TestStockBalanceNetSQLUsesOneSnapshotAndValidatedDocumentStates(t *testing.
 		"ref_doc_no",
 		"stand_value",
 		"divide_value",
+		"count(distinct doc_date)",
+		"sale_order_document_identity_ambiguous",
 		"source_snapshot_at",
 	} {
 		if !strings.Contains(lower, fragment) {

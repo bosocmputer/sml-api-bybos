@@ -91,6 +91,7 @@ const stockBalanceNetRowsSQL = `WITH requested_items AS (
 ), active_so_scopes AS (
 	SELECT
 		d.doc_no,
+		d.doc_date,
 		d.item_code,
 		TRIM(COALESCE(d.wh_code, '')) AS warehouse_code,
 		TRIM(COALESCE(d.shelf_code, '')) AS location_code,
@@ -104,10 +105,11 @@ const stockBalanceNetRowsSQL = `WITH requested_items AS (
 	  AND h.doc_date<=$1::date AND d.doc_date<=$1::date
 	  AND COALESCE(i.status, 0)=0 AND COALESCE(i.item_type, 0)=0
 	  AND d.qty>=0 AND d.stand_value>0 AND d.divide_value>0
-	GROUP BY d.doc_no,d.item_code,TRIM(COALESCE(d.wh_code, '')),TRIM(COALESCE(d.shelf_code, ''))
+	GROUP BY d.doc_no,d.doc_date,d.item_code,TRIM(COALESCE(d.wh_code, '')),TRIM(COALESCE(d.shelf_code, ''))
 ), active_so_totals AS (
 	SELECT doc_no,item_code,SUM(ordered_base_qty) AS ordered_base_qty,
 	       COUNT(*) AS scope_count,
+	       COUNT(DISTINCT doc_date) AS document_date_count,
 	       MIN(warehouse_code) AS warehouse_code,MIN(location_code) AS location_code
 	FROM active_so_scopes GROUP BY doc_no,item_code
 ), active_fulfilled AS (
@@ -125,6 +127,7 @@ const stockBalanceNetRowsSQL = `WITH requested_items AS (
 	SELECT so.*,
 	       COALESCE(f.fulfilled_base_qty,0) AS fulfilled_base_qty,
 	       CASE
+	         WHEN so.document_date_count>1 THEN 'sale_order_document_identity_ambiguous'
 	         WHEN COALESCE(f.fulfilled_base_qty,0)>so.ordered_base_qty THEN 'sale_order_overfulfilled_or_mislinked'
 	         WHEN COALESCE(f.fulfilled_base_qty,0)>0
 	          AND COALESCE(f.fulfilled_base_qty,0)<so.ordered_base_qty
