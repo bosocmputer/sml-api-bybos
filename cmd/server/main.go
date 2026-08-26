@@ -123,6 +123,8 @@ func main() {
 	cw := compat.NewWriteHandler(dbm, logger)
 	v1.POST("/ic/sale-orders", cw.CreateSaleOrder)
 	v1.POST("/ic/sale-invoices", cw.CreateSaleInvoice)
+	v1.POST("/ic/sale-invoices/:doc_no/void/preview", cw.PreviewSaleInvoiceVoid)
+	v1.POST("/ic/sale-invoices/:doc_no/void", cw.CreateSaleInvoiceVoid)
 	v1.POST("/ic/sale-invoices/:doc_no/cancel/preview", cw.PreviewSaleInvoiceCancel)
 	v1.POST("/ic/sale-invoices/:doc_no/cancel", cw.CreateSaleInvoiceCancel)
 	v1.POST("/ic/purchase-orders", cw.CreatePurchaseOrder)

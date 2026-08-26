@@ -248,8 +248,10 @@ Set-product fields เป็น contract กลางแบบ tenant-generic �
 |---|---|---|
 | `POST` | `/api/v1/ic/sale-orders` | สร้างใบสั่งขาย (sale order); `expand_set_items=true` เพื่อเขียน parent/child สินค้าชุด |
 | `POST` | `/api/v1/ic/sale-invoices` | สร้างใบกำกับภาษี (sale invoice); `expand_set_items=true` เพื่อเขียน parent/child สินค้าชุด |
-| `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel/preview` | Preview ใบลดหนี้ (credit note) ที่จะสร้างจากใบกำกับภาษีเดิม โดยไม่เขียนข้อมูล |
-| `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel` | สร้างใบลดหนี้ยกเลิกใบกำกับภาษี (`trans_flag` credit note); idempotent ถ้ามีใบลดหนี้อยู่แล้วจะคืน `status=already_exists` |
+| `POST` | `/api/v1/ic/sale-invoices/:doc_no/void/preview` | Preview เอกสารยกเลิกขายสินค้าและบริการ (`TRANS_FLAG 45`, screen `SIC`) โดยไม่เขียนข้อมูล |
+| `POST` | `/api/v1/ic/sale-invoices/:doc_no/void` | สร้างเอกสารยกเลิกขายสินค้าและบริการแบบ header-only และยกเลิกใบขายเดิม; idempotent ตามใบขายต้นทาง |
+| `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel/preview` | Preview รับคืนสินค้า/ลดหนี้ (`TRANS_FLAG 48`, screen `ST`) โดยไม่เขียนข้อมูล |
+| `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel` | สร้างรับคืนสินค้า/ลดหนี้พร้อมรายการสินค้าและลูกหนี้อ้างอิงใบขายเดิม; idempotent ตามใบขายต้นทาง |
 | `POST` | `/api/v1/ic/purchase-orders` | สร้างใบสั่งซื้อ (purchase order) |
 
 เมื่อใช้ `expand_set_items=true` ผู้เรียกต้องส่งยอด header และยอด parent
@@ -314,7 +316,7 @@ diagnostic ที่ fail closed เมื่อ document chain หรือ loc
 |---|---|---|
 | `GET` | `/api/v1/ic/doc-formats` | รูปแบบเอกสารทั้งหมดจาก `erp_doc_format`; ส่ง `screen_code` ได้ถ้าต้องการ filter |
 | `GET` | `/api/v1/ic/doc-formats/by-code?doc_format_code=PO` | ค้นหารูปแบบเอกสารด้วย `erp_doc_format.code` และคืน `screen_code` ของรายการนั้น |
-| `GET` | `/api/v1/ic/doc-no/next` | ดูเลขเอกสารถัดไปจาก SML สำหรับ `saleorder`, `saleinvoice`, `purchaseorder`, `receipt` |
+| `GET` | `/api/v1/ic/doc-no/next` | ดูเลขเอกสารถัดไปจาก SML สำหรับ `saleorder`, `saleinvoice`, `saleinvoicecancel`, `creditnote`, `purchaseorder`, `receipt` |
 | `GET` | `/api/v1/ic/document-candidates?doc_format_code=` | ค้นหาเอกสารจาก `ic_trans UNION ALL ap_ar_trans` ตาม `doc_format_code`; `search` เป็น contains literal บน `doc_no`, `cust_code`, `ar_customer.name_1`, `ap_supplier.name_1` |
 | `POST` | `/api/v1/ic/document-candidates/batch` | ตรวจเลขเอกสารแบบ exact match สูงสุด 30 รายการจากทั้ง `ic_trans` และ `ap_ar_trans`; ใช้สำหรับ PaperLess batch import |
 | `GET` | `/api/v1/ic/document-candidates/:doc_no?doc_format_code=` | เอกสารเดี่ยวจากตารางเดียวกับ document-candidates |

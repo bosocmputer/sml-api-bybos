@@ -23,8 +23,16 @@ type saleInvoiceCancelRequest struct {
 	UserRequest   string `json:"user_request"`
 }
 
+type saleInvoiceCancelKind string
+
+const (
+	saleInvoiceCancelKindVoid       saleInvoiceCancelKind = "sale_invoice_cancel"
+	saleInvoiceCancelKindCreditNote saleInvoiceCancelKind = "credit_note"
+)
+
 type saleInvoiceCancelPreview struct {
 	Status              string                         `json:"status"`
+	Kind                saleInvoiceCancelKind          `json:"kind"`
 	SaleDocNo           string                         `json:"sale_doc_no"`
 	CancelDocNo         string                         `json:"cancel_doc_no,omitempty"`
 	ExistingCancelDocNo string                         `json:"existing_cancel_doc_no,omitempty"`
@@ -38,6 +46,8 @@ type saleInvoiceCancelPreview struct {
 	TotalAfterVAT       float64                        `json:"total_after_vat"`
 	ItemCount           int                            `json:"item_count"`
 	Items               []saleInvoiceCancelPreviewItem `json:"items"`
+	SourceTotalAmount   float64                        `json:"source_total_amount"`
+	SourceItemCount     int                            `json:"source_item_count"`
 	Message             string                         `json:"message,omitempty"`
 }
 
@@ -111,6 +121,14 @@ type saleInvoiceCancelLine struct {
 }
 
 func (h *WriteHandler) PreviewSaleInvoiceCancel(c *gin.Context) {
+	h.previewSaleInvoiceCancellation(c, saleInvoiceCancelKindCreditNote)
+}
+
+func (h *WriteHandler) PreviewSaleInvoiceVoid(c *gin.Context) {
+	h.previewSaleInvoiceCancellation(c, saleInvoiceCancelKindVoid)
+}
+
+func (h *WriteHandler) previewSaleInvoiceCancellation(c *gin.Context, kind saleInvoiceCancelKind) {
 	start := time.Now()
 	docNo := strings.TrimSpace(c.Param("doc_no"))
 	var req saleInvoiceCancelRequest
@@ -119,63 +137,83 @@ func (h *WriteHandler) PreviewSaleInvoiceCancel(c *gin.Context) {
 	defer cancel()
 	pool := getPool(c, h.dbm)
 	if pool == nil {
-		h.logWrite(c, routeCreditNote, docNo, 0, start, "db_pool_error")
+		h.logWrite(c, cancellationRoute(kind), docNo, 0, start, "db_pool_error")
 		return
 	}
-	result, err := previewSaleInvoiceCancel(ctx, pool, docNo, req)
+	result, err := previewSaleInvoiceCancellation(ctx, pool, docNo, req, kind)
+	route := cancellationRoute(kind)
 	if err != nil {
 		var ae *appError
 		if errors.As(err, &ae) {
 			writeAppError(c, ae)
-			h.logWrite(c, routeCreditNote, req.DocNo, 0, start, ae.Code)
+			h.logWrite(c, route, req.DocNo, 0, start, ae.Code)
 			return
 		}
 		api.Internal(c, "sale_invoice_cancel_preview_failed", "preview sale invoice cancellation failed", err.Error())
-		h.logWrite(c, routeCreditNote, req.DocNo, 0, start, "sale_invoice_cancel_preview_failed")
+		h.logWrite(c, route, req.DocNo, 0, start, "sale_invoice_cancel_preview_failed")
 		return
 	}
 	api.OK(c, result)
-	h.logWrite(c, routeCreditNote, result.CancelDocNo, 0, start, "")
+	h.logWrite(c, route, result.CancelDocNo, 0, start, "")
 }
 
 func (h *WriteHandler) CreateSaleInvoiceCancel(c *gin.Context) {
+	h.createSaleInvoiceCancellation(c, saleInvoiceCancelKindCreditNote)
+}
+
+func (h *WriteHandler) CreateSaleInvoiceVoid(c *gin.Context) {
+	h.createSaleInvoiceCancellation(c, saleInvoiceCancelKindVoid)
+}
+
+func (h *WriteHandler) createSaleInvoiceCancellation(c *gin.Context, kind saleInvoiceCancelKind) {
 	start := time.Now()
 	docNo := strings.TrimSpace(c.Param("doc_no"))
 	var req saleInvoiceCancelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.BadRequest(c, "invalid_json", "invalid cancellation payload", err.Error())
-		h.logWrite(c, routeCreditNote, "", 0, start, "invalid_json")
+		h.logWrite(c, cancellationRoute(kind), "", 0, start, "invalid_json")
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 	pool := getPool(c, h.dbm)
 	if pool == nil {
-		h.logWrite(c, routeCreditNote, req.DocNo, 0, start, "db_pool_error")
+		h.logWrite(c, cancellationRoute(kind), req.DocNo, 0, start, "db_pool_error")
 		return
 	}
-	result, rows, err := createSaleInvoiceCancel(ctx, pool, docNo, req)
+	result, rows, err := createSaleInvoiceCancellation(ctx, pool, docNo, req, kind)
+	route := cancellationRoute(kind)
 	if err != nil {
 		var ae *appError
 		if errors.As(err, &ae) {
 			writeAppError(c, ae)
-			h.logWrite(c, routeCreditNote, req.DocNo, 0, start, ae.Code)
+			h.logWrite(c, route, req.DocNo, 0, start, ae.Code)
 			return
 		}
 		api.Internal(c, "sale_invoice_cancel_create_failed", "create sale invoice cancellation failed", err.Error())
-		h.logWrite(c, routeCreditNote, req.DocNo, rows, start, "sale_invoice_cancel_create_failed")
+		h.logWrite(c, route, req.DocNo, rows, start, "sale_invoice_cancel_create_failed")
 		return
 	}
 	if result.Status == "already_exists" {
 		api.OK(c, result)
-		h.logWrite(c, routeCreditNote, result.ExistingCancelDocNo, 0, start, "")
+		h.logWrite(c, route, result.ExistingCancelDocNo, 0, start, "")
 		return
 	}
 	api.Created(c, result)
-	h.logWrite(c, routeCreditNote, result.CancelDocNo, rows, start, "")
+	h.logWrite(c, route, result.CancelDocNo, rows, start, "")
 }
 
-func previewSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo string, req saleInvoiceCancelRequest) (saleInvoiceCancelPreview, error) {
+func cancellationRoute(kind saleInvoiceCancelKind) docRoute {
+	if kind == saleInvoiceCancelKindVoid {
+		return routeSaleInvoiceCancel
+	}
+	return routeCreditNote
+}
+
+func previewSaleInvoiceCancellation(ctx context.Context, pool txBeginner, saleDocNo string, req saleInvoiceCancelRequest, kind saleInvoiceCancelKind) (saleInvoiceCancelPreview, error) {
+	if kind == saleInvoiceCancelKindVoid {
+		return previewSaleInvoiceVoid(ctx, pool, saleDocNo, req)
+	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return saleInvoiceCancelPreview{}, fmt.Errorf("begin tx: %w", err)
@@ -187,7 +225,10 @@ func previewSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo st
 	return buildSaleInvoiceCancelPreview(ctx, tx, saleDocNo, req, false)
 }
 
-func createSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo string, req saleInvoiceCancelRequest) (saleInvoiceCancelPreview, int, error) {
+func createSaleInvoiceCancellation(ctx context.Context, pool txBeginner, saleDocNo string, req saleInvoiceCancelRequest, kind saleInvoiceCancelKind) (saleInvoiceCancelPreview, int, error) {
+	if kind == saleInvoiceCancelKindVoid {
+		return createSaleInvoiceVoid(ctx, pool, saleDocNo, req)
+	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("begin tx: %w", err)
@@ -243,7 +284,7 @@ func createSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo str
 		src.TotalBeforeVAT, src.TotalDiscount, headerDiscountWord(src.TotalDiscount), src.TotalExceptVAT,
 		req.DocNo, docDate,
 		src.TotalAmount, src.TotalAmount,
-		src.InquiryType, firstNonEmpty(req.Remark, "ยกเลิกจาก Nexflow"), req.UserRequest,
+		src.InquiryType, firstNonEmpty(req.Remark, "รับคืนสินค้า/ลดหนี้จาก Nexflow"), req.UserRequest,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -289,7 +330,7 @@ func createSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo str
 				last_status
 			) VALUES (
 				$1,$2,$3,$4,$5,
-				$6,$7,-1,$8,
+				$6,$7,1,$8,
 				$9,$10,$11,$12,$13,
 				$14,$15,$16,$17,
 				$18,$19,$20,
@@ -305,13 +346,13 @@ func createSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo str
 			models.TransTypeSale, models.TransFlagCreditNote, docDate, req.DocNo, it.LineNumber,
 			src.CustCode, docTime, src.InquiryType,
 			it.ItemCode, it.ItemName, it.UnitCode, it.IsPremium, firstNonZero(it.IsGetPrice, 1),
-			it.WHCode, it.ShelfCode, firstNonEmpty(it.WHCode2, it.WHCode), firstNonEmpty(it.ShelfCode2, it.ShelfCode),
+			it.WHCode, it.ShelfCode, "", "",
 			it.Qty, it.Price, firstNonZeroFloat(it.PriceExcludeVAT, it.Price),
 			it.DiscountAmount, it.Discount, it.TotalVATValue,
 			it.SumAmount, firstNonZeroFloat(it.SumAmountExclVAT, it.SumAmount),
 			it.TaxType, firstNonZero(it.VATType, src.VATType),
 			src.DocNo, it.LineNumber,
-			src.BranchCode,
+			firstNonEmpty(src.BranchCode, "000"),
 			it.ItemType, refGUID, it.SetRefPrice, it.SetRefQty,
 			it.ItemCodeMain, setRefLine, it.PriceSetRatio,
 		)
@@ -320,10 +361,33 @@ func createSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo str
 		}
 		rowsWritten++
 	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE ic_trans SET used_status=1 WHERE doc_no=$1 AND trans_flag=$2 AND last_status=0`,
-		src.DocNo, models.TransFlagSaleInvoice); err != nil {
+	_, err = tx.Exec(ctx, `
+		INSERT INTO ap_ar_trans_detail (
+			trans_type, trans_flag, doc_date, doc_no, line_number,
+			billing_no, billing_date,
+			sum_debt_value, sum_debt_amount, sum_debt_balance,
+			sum_before_vat, bill_type, last_status
+		) VALUES ($1,$2,$3,$4,0,$5,$6,$7,$7,$7,$8,1,0)`,
+		models.TransTypeSale, models.TransFlagCreditNote, docDate, req.DocNo,
+		src.DocNo, src.DocDate, src.TotalAmount, src.TotalBeforeVAT,
+	)
+	if err != nil {
+		return saleInvoiceCancelPreview{}, rowsWritten, fmt.Errorf("insert credit note receivable reference: %w", err)
+	}
+	rowsWritten++
+	result, err := tx.Exec(ctx,
+		`UPDATE ic_trans SET used_status=1 WHERE doc_no=$1 AND trans_flag=$2 AND COALESCE(last_status,0)=0 AND COALESCE(used_status,0)=0`,
+		src.DocNo, models.TransFlagSaleInvoice)
+	if err != nil {
 		return saleInvoiceCancelPreview{}, rowsWritten, fmt.Errorf("mark source sale used: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return saleInvoiceCancelPreview{}, rowsWritten, newAppError(
+			http.StatusConflict,
+			"source_sale_state_changed",
+			"source sale invoice changed before credit note creation",
+			gin.H{"sale_doc_no": src.DocNo},
+		)
 	}
 	if err := normalizeInsertedDocument(ctx, tx, req.DocNo, models.TransFlagCreditNote); err != nil {
 		return saleInvoiceCancelPreview{}, rowsWritten, err
@@ -334,6 +398,164 @@ func createSaleInvoiceCancel(ctx context.Context, pool txBeginner, saleDocNo str
 	preview.Status = "created"
 	preview.Message = "created cancellation document"
 	return preview, rowsWritten, nil
+}
+
+func previewSaleInvoiceVoid(ctx context.Context, pool txBeginner, saleDocNo string, req saleInvoiceCancelRequest) (saleInvoiceCancelPreview, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return saleInvoiceCancelPreview{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
+		return saleInvoiceCancelPreview{}, fmt.Errorf("set repeatable-read isolation: %w", err)
+	}
+	return buildSaleInvoiceVoidPreview(ctx, tx, saleDocNo, req, false)
+}
+
+func createSaleInvoiceVoid(ctx context.Context, pool txBeginner, saleDocNo string, req saleInvoiceCancelRequest) (saleInvoiceCancelPreview, int, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
+		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("set repeatable-read isolation: %w", err)
+	}
+
+	req.DocNo = strings.TrimSpace(req.DocNo)
+	if req.DocNo == "" {
+		return saleInvoiceCancelPreview{}, 0, newAppError(http.StatusBadRequest, "validation_failed", "doc_no is required for sale invoice cancellation create", nil)
+	}
+	preview, err := buildSaleInvoiceVoidPreview(ctx, tx, saleDocNo, req, true)
+	if err != nil {
+		return saleInvoiceCancelPreview{}, 0, err
+	}
+	if preview.Status == "already_exists" {
+		return preview, 0, nil
+	}
+	src, err := loadSaleInvoiceForCancel(ctx, tx, saleDocNo, true)
+	if err != nil {
+		return saleInvoiceCancelPreview{}, 0, err
+	}
+	docDate, docTime, docFormat := normalizedVoidDocFields(req)
+	_, err = tx.Exec(ctx, `
+		INSERT INTO ic_trans (
+			trans_type, trans_flag, doc_date, doc_no, doc_time, doc_format_code,
+			cust_code, doc_ref, remark, user_request, last_status
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0)`,
+		models.TransTypeSale, models.TransFlagSaleInvoiceCancel,
+		docDate, req.DocNo, docTime, docFormat,
+		src.CustCode, src.DocNo,
+		firstNonEmpty(req.Remark, "ยกเลิกขายสินค้าและบริการจาก Nexflow"), req.UserRequest,
+	)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return saleInvoiceCancelPreview{}, 0, newAppError(http.StatusConflict, "duplicate_doc_no", fmt.Sprintf("doc_no '%s' already exists", req.DocNo), nil)
+		}
+		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("insert sale invoice cancellation header: %w", err)
+	}
+	headerResult, err := tx.Exec(ctx, `
+		UPDATE ic_trans
+		   SET last_status=1
+		 WHERE doc_no=$1 AND trans_flag=$2 AND COALESCE(last_status,0)=0`,
+		src.DocNo, models.TransFlagSaleInvoice)
+	if err != nil {
+		return saleInvoiceCancelPreview{}, 1, fmt.Errorf("cancel source sale invoice header: %w", err)
+	}
+	if headerResult.RowsAffected() != 1 {
+		return saleInvoiceCancelPreview{}, 1, newAppError(http.StatusConflict, "source_sale_state_changed", "source sale invoice changed before cancellation", gin.H{"sale_doc_no": src.DocNo})
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE ic_trans_detail
+		   SET last_status=1
+		 WHERE doc_no=$1 AND trans_flag=$2 AND COALESCE(last_status,0)=0`,
+		src.DocNo, models.TransFlagSaleInvoice); err != nil {
+		return saleInvoiceCancelPreview{}, 1, fmt.Errorf("cancel source sale invoice details: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return saleInvoiceCancelPreview{}, 1, fmt.Errorf("commit: %w", err)
+	}
+	preview.Status = "created"
+	preview.Message = "created sale invoice cancellation document"
+	return preview, 1, nil
+}
+
+func buildSaleInvoiceVoidPreview(ctx context.Context, tx pgx.Tx, saleDocNo string, req saleInvoiceCancelRequest, lock bool) (saleInvoiceCancelPreview, error) {
+	saleDocNo = strings.TrimSpace(saleDocNo)
+	if saleDocNo == "" {
+		return saleInvoiceCancelPreview{}, newAppError(http.StatusBadRequest, "validation_failed", "sale invoice doc_no is required", nil)
+	}
+	existing, err := existingSaleInvoiceVoid(ctx, tx, saleDocNo, lock)
+	if err != nil {
+		return saleInvoiceCancelPreview{}, err
+	}
+	if existing != "" {
+		return saleInvoiceCancelPreview{
+			Status:              "already_exists",
+			Kind:                saleInvoiceCancelKindVoid,
+			SaleDocNo:           saleDocNo,
+			ExistingCancelDocNo: existing,
+			TransFlag:           models.TransFlagSaleInvoiceCancel,
+			Message:             "sale invoice cancellation already exists for this sale invoice",
+		}, nil
+	}
+	src, err := loadSaleInvoiceForCancel(ctx, tx, saleDocNo, lock)
+	if err != nil {
+		return saleInvoiceCancelPreview{}, err
+	}
+	if src.UsedStatus == 1 {
+		return saleInvoiceCancelPreview{}, newAppError(
+			http.StatusConflict,
+			"sale_invoice_already_referenced",
+			"sale invoice is already referenced and cannot be voided",
+			nil,
+		)
+	}
+	docDate, _, docFormat := normalizedVoidDocFields(req)
+	if err := validateCancellationDocFormat(ctx, tx, docFormat, "SIC"); err != nil {
+		return saleInvoiceCancelPreview{}, err
+	}
+	return saleInvoiceCancelPreview{
+		Status:            "ready",
+		Kind:              saleInvoiceCancelKindVoid,
+		SaleDocNo:         src.DocNo,
+		CancelDocNo:       strings.TrimSpace(req.DocNo),
+		TransFlag:         models.TransFlagSaleInvoiceCancel,
+		DocFormatCode:     docFormat,
+		DocDate:           docDate.Format("2006-01-02"),
+		CustCode:          src.CustCode,
+		TotalAmount:       0,
+		TotalValue:        0,
+		TotalVATValue:     0,
+		TotalAfterVAT:     0,
+		ItemCount:         0,
+		Items:             []saleInvoiceCancelPreviewItem{},
+		SourceTotalAmount: src.TotalAmount,
+		SourceItemCount:   len(src.Items),
+	}, nil
+}
+
+func existingSaleInvoiceVoid(ctx context.Context, tx pgx.Tx, saleDocNo string, lock bool) (string, error) {
+	sql := `
+		SELECT COALESCE(doc_no, '')
+		  FROM ic_trans
+		 WHERE trans_flag=$1
+		   AND COALESCE(last_status,0)=0
+		   AND doc_ref=$2
+		 ORDER BY doc_date DESC, doc_no DESC
+		 LIMIT 1`
+	if lock {
+		sql += ` FOR UPDATE`
+	}
+	var docNo string
+	err := tx.QueryRow(ctx, sql, models.TransFlagSaleInvoiceCancel, saleDocNo).Scan(&docNo)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("lookup existing sale invoice cancellation: %w", err)
+	}
+	return strings.TrimSpace(docNo), nil
 }
 
 func buildSaleInvoiceCancelPreview(ctx context.Context, tx pgx.Tx, saleDocNo string, req saleInvoiceCancelRequest, lock bool) (saleInvoiceCancelPreview, error) {
@@ -348,6 +570,7 @@ func buildSaleInvoiceCancelPreview(ctx context.Context, tx pgx.Tx, saleDocNo str
 	if existing != "" {
 		return saleInvoiceCancelPreview{
 			Status:              "already_exists",
+			Kind:                saleInvoiceCancelKindCreditNote,
 			SaleDocNo:           saleDocNo,
 			ExistingCancelDocNo: existing,
 			TransFlag:           models.TransFlagCreditNote,
@@ -362,19 +585,25 @@ func buildSaleInvoiceCancelPreview(ctx context.Context, tx pgx.Tx, saleDocNo str
 		return saleInvoiceCancelPreview{}, newAppError(http.StatusConflict, "source_sale_already_used", "source sale invoice is already referenced but no credit note was found", gin.H{"sale_doc_no": saleDocNo})
 	}
 	docDate, _, docFormat := normalizedCancelDocFields(req)
+	if err := validateCancellationDocFormat(ctx, tx, docFormat, "ST"); err != nil {
+		return saleInvoiceCancelPreview{}, err
+	}
 	out := saleInvoiceCancelPreview{
-		Status:        "ready",
-		SaleDocNo:     src.DocNo,
-		CancelDocNo:   strings.TrimSpace(req.DocNo),
-		TransFlag:     models.TransFlagCreditNote,
-		DocFormatCode: docFormat,
-		DocDate:       docDate.Format("2006-01-02"),
-		CustCode:      src.CustCode,
-		TotalAmount:   src.TotalAmount,
-		TotalValue:    src.TotalValue,
-		TotalVATValue: src.TotalVATValue,
-		TotalAfterVAT: src.TotalAfterVAT,
-		ItemCount:     len(src.Items),
+		Status:            "ready",
+		Kind:              saleInvoiceCancelKindCreditNote,
+		SaleDocNo:         src.DocNo,
+		CancelDocNo:       strings.TrimSpace(req.DocNo),
+		TransFlag:         models.TransFlagCreditNote,
+		DocFormatCode:     docFormat,
+		DocDate:           docDate.Format("2006-01-02"),
+		CustCode:          src.CustCode,
+		TotalAmount:       src.TotalAmount,
+		TotalValue:        src.TotalValue,
+		TotalVATValue:     src.TotalVATValue,
+		TotalAfterVAT:     src.TotalAfterVAT,
+		ItemCount:         len(src.Items),
+		SourceTotalAmount: src.TotalAmount,
+		SourceItemCount:   len(src.Items),
 	}
 	for _, it := range src.Items {
 		out.Items = append(out.Items, saleInvoiceCancelPreviewItem{
@@ -499,6 +728,14 @@ func loadSaleInvoiceForCancel(ctx context.Context, tx pgx.Tx, saleDocNo string, 
 }
 
 func normalizedCancelDocFields(req saleInvoiceCancelRequest) (time.Time, string, string) {
+	return normalizedCancellationDocFields(req, "CN")
+}
+
+func normalizedVoidDocFields(req saleInvoiceCancelRequest) (time.Time, string, string) {
+	return normalizedCancellationDocFields(req, "SIC")
+}
+
+func normalizedCancellationDocFields(req saleInvoiceCancelRequest, defaultDocFormat string) (time.Time, string, string) {
 	docDate := time.Now()
 	if parsed, err := time.Parse("2006-01-02", strings.TrimSpace(req.DocDate)); err == nil {
 		docDate = parsed
@@ -509,9 +746,36 @@ func normalizedCancelDocFields(req saleInvoiceCancelRequest) (time.Time, string,
 	}
 	docFormat := strings.TrimSpace(req.DocFormatCode)
 	if docFormat == "" {
-		docFormat = "CN"
+		docFormat = defaultDocFormat
 	}
 	return docDate, docTime, docFormat
+}
+
+func validateCancellationDocFormat(ctx context.Context, tx pgx.Tx, docFormatCode, screenCode string) error {
+	docFormatCode = strings.TrimSpace(docFormatCode)
+	screenCode = strings.ToUpper(strings.TrimSpace(screenCode))
+	if docFormatCode == "" || screenCode == "" {
+		return newAppError(http.StatusBadRequest, "validation_failed", "doc_format_code and cancellation screen_code are required", nil)
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			  FROM erp_doc_format
+			 WHERE LOWER(code)=LOWER($1)
+			   AND UPPER(COALESCE(screen_code,''))=$2
+		)`, docFormatCode, screenCode).Scan(&exists); err != nil {
+		return fmt.Errorf("validate cancellation doc format: %w", err)
+	}
+	if !exists {
+		return newAppError(
+			http.StatusBadRequest,
+			"doc_format_not_valid_for_cancel_type",
+			fmt.Sprintf("doc_format_code '%s' is not configured for SML screen_code %s", docFormatCode, screenCode),
+			gin.H{"doc_format_code": docFormatCode, "screen_code": screenCode},
+		)
+	}
+	return nil
 }
 
 func firstNonZero(v, fallback int) int {

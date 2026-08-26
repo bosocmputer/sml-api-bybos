@@ -16,9 +16,12 @@ func TestResolveDocNoRoute(t *testing.T) {
 	}{
 		{in: "saleorder", wantName: "saleorder", wantFlag: models.TransFlagSaleOrder, wantFound: true},
 		{in: "SI", wantName: "saleinvoice", wantFlag: models.TransFlagSaleInvoice, wantFound: true},
+		{in: "saleinvoicecancel", wantName: "saleinvoicecancel", wantFlag: models.TransFlagSaleInvoiceCancel, wantFound: true},
+		{in: "SIC", wantName: "saleinvoicecancel", wantFlag: models.TransFlagSaleInvoiceCancel, wantFound: true},
 		{in: "creditnote", wantName: "creditnote", wantFlag: models.TransFlagCreditNote, wantFound: true},
 		{in: "CN", wantName: "creditnote", wantFlag: models.TransFlagCreditNote, wantFound: true},
-		{in: "sale_cancel", wantName: "creditnote", wantFlag: models.TransFlagCreditNote, wantFound: true},
+		{in: "sale_return", wantName: "creditnote", wantFlag: models.TransFlagCreditNote, wantFound: true},
+		{in: "sale_cancel", wantName: "saleinvoicecancel", wantFlag: models.TransFlagSaleInvoiceCancel, wantFound: true},
 		{in: "purchase_order", wantName: "purchaseorder", wantFlag: models.TransFlagPurchaseOrder, wantFound: true},
 		{in: "unknown", wantFound: false},
 	}

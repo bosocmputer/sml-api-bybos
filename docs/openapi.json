@@ -1872,7 +1872,7 @@
       },
       "SaleInvoiceCancelRequest": {
         "type": "object",
-        "description": "doc_no is the new credit-note document number (required on the create call; ignored on preview).",
+        "description": "doc_no is the new document number. Use a doc_format_code configured for screen SIC on /void or screen ST on /cancel.",
         "properties": {
           "doc_no": {
             "type": "string",
@@ -1890,7 +1890,7 @@
           "doc_format_code": {
             "type": "string",
             "example": "CN",
-            "description": "Defaults to CN"
+            "description": "Defaults to SIC on /void and CN on /cancel"
           },
           "remark": {
             "type": "string"
@@ -1903,6 +1903,13 @@
       "SaleInvoiceCancelPreview": {
         "type": "object",
         "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "sale_invoice_cancel",
+              "credit_note"
+            ]
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -1946,6 +1953,12 @@
             "type": "number"
           },
           "item_count": {
+            "type": "integer"
+          },
+          "source_total_amount": {
+            "type": "number"
+          },
+          "source_item_count": {
             "type": "integer"
           },
           "items": {
@@ -4879,13 +4892,110 @@
         }
       }
     },
+    "/api/v1/ic/sale-invoices/{doc_no}/void/preview": {
+      "post": {
+        "tags": ["Documents"],
+        "summary": "Preview cancellation of a sale invoice",
+        "description": "Read-only preview of the header-only TRANS_FLAG 45 document. The source sale invoice and its detail rows are not changed.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "example": "BF-INV26050001"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SaleInvoiceCancelRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "preview (status=ready or already_exists)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {"$ref": "#/components/schemas/SuccessResponse"},
+                    {"properties": {"data": {"$ref": "#/components/schemas/SaleInvoiceCancelPreview"}}}
+                  ]
+                }
+              }
+            }
+          },
+          "400": {"description": "invalid request or SIC document format", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "source sale invoice not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "source sale invoice cannot be cancelled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/ic/sale-invoices/{doc_no}/void": {
+      "post": {
+        "tags": ["Documents"],
+        "summary": "Cancel a sale invoice",
+        "description": "Creates the header-only TRANS_FLAG 45 cancellation document and marks the source TRANS_FLAG 44 header and detail rows last_status=1. Idempotent by source sale invoice.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "example": "BF-INV26050001"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SaleInvoiceCancelRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "sale invoice cancellation created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {"$ref": "#/components/schemas/SuccessResponse"},
+                    {"properties": {"data": {"$ref": "#/components/schemas/SaleInvoiceCancelPreview"}}}
+                  ]
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "already_exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {"$ref": "#/components/schemas/SuccessResponse"},
+                    {"properties": {"data": {"$ref": "#/components/schemas/SaleInvoiceCancelPreview"}}}
+                  ]
+                }
+              }
+            }
+          },
+          "400": {"description": "invalid request or SIC document format", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "source sale invoice not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "duplicate doc_no, state race, or source sale invoice cannot be cancelled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/ic/sale-invoices/{doc_no}/cancel/preview": {
       "post": {
         "tags": [
           "Documents"
         ],
-        "summary": "Preview a sale-invoice cancellation (credit note)",
-        "description": "Read-only: shows the credit note that would be created for this sale invoice without writing anything. doc_no in the path is the existing sale invoice; the request body's doc_no (if any) is ignored on preview.",
+        "summary": "Preview a sale return / credit note",
+        "description": "Read-only: shows the TRANS_FLAG 48 sale return / credit note that would be created for this sale invoice without writing anything.",
         "parameters": [
           {
             "name": "doc_no",
@@ -4977,8 +5087,8 @@
         "tags": [
           "Documents"
         ],
-        "summary": "Create a credit note cancelling a sale invoice",
-        "description": "Writes a credit note (ic_trans/ic_trans_detail, trans_flag=credit note) referencing the sale invoice and marks the source invoice used_status=1. Idempotent: if a credit note already exists for this sale invoice, returns 200 with status=already_exists instead of creating a duplicate.",
+        "summary": "Create a sale return / credit note",
+        "description": "Writes a TRANS_FLAG 48 sale return / credit note with item and receivable references to the source sale invoice, then marks the source invoice used_status=1. Idempotent by source sale invoice.",
         "parameters": [
           {
             "name": "doc_no",

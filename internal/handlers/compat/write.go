@@ -58,10 +58,15 @@ var (
 		transType: models.TransTypeSale, itemKey: "details", partyKind: "customer",
 		menuName: "BillFlow - ขายสินค้าและบริการ",
 	}
+	routeSaleInvoiceCancel = docRoute{
+		name: "saleinvoicecancel", transFlag: models.TransFlagSaleInvoiceCancel,
+		transType: models.TransTypeSale, itemKey: "", partyKind: "customer",
+		menuName: "Nexflow - ยกเลิกขายสินค้าและบริการ",
+	}
 	routeCreditNote = docRoute{
 		name: "creditnote", transFlag: models.TransFlagCreditNote,
 		transType: models.TransTypeSale, itemKey: "details", partyKind: "customer",
-		menuName: "Nexflow - ยกเลิกขายสินค้าและบริการ",
+		menuName: "Nexflow - รับคืนสินค้า/ลดหนี้",
 	}
 	routePurchaseOrder = docRoute{
 		name: "purchaseorder", transFlag: models.TransFlagPurchaseOrder,

@@ -2,22 +2,23 @@ package models
 
 // TransFlag คือประเภท document ใน ic_trans (จาก DB จริง)
 const (
-	TransFlagPurchaseRequest  = 2
-	TransFlagPurchaseOrder    = 6
-	TransFlagPurchaseInvoice  = 12
-	TransFlagQuotation        = 30
-	TransFlagSaleReserve      = 34
-	TransFlagSaleOrder        = 36
-	TransFlagSaleInvoice      = 44
-	TransFlagCreditNote       = 48
-	TransFlagInventoryAdjust  = 66
-	TransFlagStockTransferOut = 70
-	TransFlagStockTransferIn  = 72
-	TransFlagPayment          = 19
-	TransFlagBillReceive      = 213
-	TransFlagARReceipt        = 239
-	TransFlagEPurchaseOrder   = 260
-	TransFlagPurchaseInvoiceE = 310
+	TransFlagPurchaseRequest   = 2
+	TransFlagPurchaseOrder     = 6
+	TransFlagPurchaseInvoice   = 12
+	TransFlagQuotation         = 30
+	TransFlagSaleReserve       = 34
+	TransFlagSaleOrder         = 36
+	TransFlagSaleInvoice       = 44
+	TransFlagSaleInvoiceCancel = 45
+	TransFlagCreditNote        = 48
+	TransFlagInventoryAdjust   = 66
+	TransFlagStockTransferOut  = 70
+	TransFlagStockTransferIn   = 72
+	TransFlagPayment           = 19
+	TransFlagBillReceive       = 213
+	TransFlagARReceipt         = 239
+	TransFlagEPurchaseOrder    = 260
+	TransFlagPurchaseInvoiceE  = 310
 )
 
 // TransType: 1=ซื้อ, 2=ขาย, 3=คลัง
@@ -29,19 +30,20 @@ const (
 
 // transFlagMeta เก็บ trans_type ของแต่ละ trans_flag
 var transFlagMeta = map[int]int{
-	TransFlagPurchaseRequest: TransTypePurchase,
-	TransFlagPurchaseOrder:   TransTypePurchase,
-	TransFlagPurchaseInvoice: TransTypePurchase,
-	TransFlagQuotation:       TransTypeSale,
-	TransFlagSaleReserve:     TransTypeSale,
-	TransFlagSaleOrder:       TransTypeSale,
-	TransFlagSaleInvoice:     TransTypeSale,
-	TransFlagCreditNote:      TransTypeSale,
-	TransFlagInventoryAdjust: TransTypeInventory,
-	TransFlagPayment:         TransTypePurchase,
-	TransFlagBillReceive:     TransTypePurchase,
-	TransFlagARReceipt:       TransTypeSale,
-	TransFlagEPurchaseOrder:  TransTypePurchase,
+	TransFlagPurchaseRequest:   TransTypePurchase,
+	TransFlagPurchaseOrder:     TransTypePurchase,
+	TransFlagPurchaseInvoice:   TransTypePurchase,
+	TransFlagQuotation:         TransTypeSale,
+	TransFlagSaleReserve:       TransTypeSale,
+	TransFlagSaleOrder:         TransTypeSale,
+	TransFlagSaleInvoice:       TransTypeSale,
+	TransFlagSaleInvoiceCancel: TransTypeSale,
+	TransFlagCreditNote:        TransTypeSale,
+	TransFlagInventoryAdjust:   TransTypeInventory,
+	TransFlagPayment:           TransTypePurchase,
+	TransFlagBillReceive:       TransTypePurchase,
+	TransFlagARReceipt:         TransTypeSale,
+	TransFlagEPurchaseOrder:    TransTypePurchase,
 }
 
 func TransTypeOf(flag int) int {

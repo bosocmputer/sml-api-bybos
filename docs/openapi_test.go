@@ -44,6 +44,10 @@ func TestOpenAPISpecIsValidAndBillFlowNative(t *testing.T) {
 		"/api/v1/marketplace/nextstep/orders",
 		"/api/v1/ic/sale-orders",
 		"/api/v1/ic/sale-invoices",
+		"/api/v1/ic/sale-invoices/{doc_no}/void/preview",
+		"/api/v1/ic/sale-invoices/{doc_no}/void",
+		"/api/v1/ic/sale-invoices/{doc_no}/cancel/preview",
+		"/api/v1/ic/sale-invoices/{doc_no}/cancel",
 		"/api/v1/ic/purchase-orders",
 		"/openapi.json",
 	} {

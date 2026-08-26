@@ -7,7 +7,7 @@ import (
 	"sml-api-bybos/internal/models"
 )
 
-func TestCreditNoteRouteUsesSaleCancelTransFlag(t *testing.T) {
+func TestCreditNoteRouteUsesCreditNoteTransFlag(t *testing.T) {
 	if routeCreditNote.name != "creditnote" {
 		t.Fatalf("route name = %q", routeCreditNote.name)
 	}
@@ -16,6 +16,18 @@ func TestCreditNoteRouteUsesSaleCancelTransFlag(t *testing.T) {
 	}
 	if routeCreditNote.transType != models.TransTypeSale || routeCreditNote.itemKey != "details" {
 		t.Fatalf("route = %+v, want sale detail route", routeCreditNote)
+	}
+}
+
+func TestSaleInvoiceCancelRouteUsesCancelSaleTransFlag(t *testing.T) {
+	if routeSaleInvoiceCancel.name != "saleinvoicecancel" {
+		t.Fatalf("route name = %q", routeSaleInvoiceCancel.name)
+	}
+	if routeSaleInvoiceCancel.transFlag != models.TransFlagSaleInvoiceCancel {
+		t.Fatalf("trans_flag = %d, want %d", routeSaleInvoiceCancel.transFlag, models.TransFlagSaleInvoiceCancel)
+	}
+	if routeSaleInvoiceCancel.transType != models.TransTypeSale || routeSaleInvoiceCancel.itemKey != "" {
+		t.Fatalf("route = %+v, want header-only sale cancellation route", routeSaleInvoiceCancel)
 	}
 }
 
@@ -43,5 +55,15 @@ func TestNormalizedCancelDocFieldsKeepsProvidedValues(t *testing.T) {
 	}
 	if docTime != "14:30" || docFormat != "CNX" {
 		t.Fatalf("doc time/format = %q/%q", docTime, docFormat)
+	}
+}
+
+func TestNormalizedVoidDocFieldsDefaultsToSIC(t *testing.T) {
+	_, docTime, docFormat := normalizedVoidDocFields(saleInvoiceCancelRequest{})
+	if docTime == "" {
+		t.Fatal("doc time should default to current HH:mm")
+	}
+	if docFormat != "SIC" {
+		t.Fatalf("doc format = %q, want SIC", docFormat)
 	}
 }

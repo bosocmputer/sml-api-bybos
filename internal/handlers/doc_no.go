@@ -42,29 +42,33 @@ type nextDocNoResult struct {
 }
 
 var docNoRoutes = map[string]docNoRoute{
-	"saleorder":      {name: "saleorder", transFlag: models.TransFlagSaleOrder, table: "ic_trans"},
-	"sale_order":     {name: "saleorder", transFlag: models.TransFlagSaleOrder, table: "ic_trans"},
-	"so":             {name: "saleorder", transFlag: models.TransFlagSaleOrder, table: "ic_trans"},
-	"saleinvoice":    {name: "saleinvoice", transFlag: models.TransFlagSaleInvoice, table: "ic_trans"},
-	"sale_invoice":   {name: "saleinvoice", transFlag: models.TransFlagSaleInvoice, table: "ic_trans"},
-	"si":             {name: "saleinvoice", transFlag: models.TransFlagSaleInvoice, table: "ic_trans"},
-	"creditnote":     {name: "creditnote", transFlag: models.TransFlagCreditNote, table: "ic_trans"},
-	"credit_note":    {name: "creditnote", transFlag: models.TransFlagCreditNote, table: "ic_trans"},
-	"cn":             {name: "creditnote", transFlag: models.TransFlagCreditNote, table: "ic_trans"},
-	"sale_cancel":    {name: "creditnote", transFlag: models.TransFlagCreditNote, table: "ic_trans"},
-	"purchaseorder":  {name: "purchaseorder", transFlag: models.TransFlagPurchaseOrder, table: "ic_trans"},
-	"purchase_order": {name: "purchaseorder", transFlag: models.TransFlagPurchaseOrder, table: "ic_trans"},
-	"po":             {name: "purchaseorder", transFlag: models.TransFlagPurchaseOrder, table: "ic_trans"},
-	"receipt":        {name: "receipt", transFlag: models.TransFlagARReceipt, table: "ap_ar_trans"},
-	"ar_receipt":     {name: "receipt", transFlag: models.TransFlagARReceipt, table: "ap_ar_trans"},
-	"rc":             {name: "receipt", transFlag: models.TransFlagARReceipt, table: "ap_ar_trans"},
+	"saleorder":           {name: "saleorder", transFlag: models.TransFlagSaleOrder, table: "ic_trans"},
+	"sale_order":          {name: "saleorder", transFlag: models.TransFlagSaleOrder, table: "ic_trans"},
+	"so":                  {name: "saleorder", transFlag: models.TransFlagSaleOrder, table: "ic_trans"},
+	"saleinvoice":         {name: "saleinvoice", transFlag: models.TransFlagSaleInvoice, table: "ic_trans"},
+	"sale_invoice":        {name: "saleinvoice", transFlag: models.TransFlagSaleInvoice, table: "ic_trans"},
+	"si":                  {name: "saleinvoice", transFlag: models.TransFlagSaleInvoice, table: "ic_trans"},
+	"saleinvoicecancel":   {name: "saleinvoicecancel", transFlag: models.TransFlagSaleInvoiceCancel, table: "ic_trans"},
+	"sale_invoice_cancel": {name: "saleinvoicecancel", transFlag: models.TransFlagSaleInvoiceCancel, table: "ic_trans"},
+	"sale_cancel":         {name: "saleinvoicecancel", transFlag: models.TransFlagSaleInvoiceCancel, table: "ic_trans"},
+	"sic":                 {name: "saleinvoicecancel", transFlag: models.TransFlagSaleInvoiceCancel, table: "ic_trans"},
+	"creditnote":          {name: "creditnote", transFlag: models.TransFlagCreditNote, table: "ic_trans"},
+	"credit_note":         {name: "creditnote", transFlag: models.TransFlagCreditNote, table: "ic_trans"},
+	"sale_return":         {name: "creditnote", transFlag: models.TransFlagCreditNote, table: "ic_trans"},
+	"cn":                  {name: "creditnote", transFlag: models.TransFlagCreditNote, table: "ic_trans"},
+	"purchaseorder":       {name: "purchaseorder", transFlag: models.TransFlagPurchaseOrder, table: "ic_trans"},
+	"purchase_order":      {name: "purchaseorder", transFlag: models.TransFlagPurchaseOrder, table: "ic_trans"},
+	"po":                  {name: "purchaseorder", transFlag: models.TransFlagPurchaseOrder, table: "ic_trans"},
+	"receipt":             {name: "receipt", transFlag: models.TransFlagARReceipt, table: "ap_ar_trans"},
+	"ar_receipt":          {name: "receipt", transFlag: models.TransFlagARReceipt, table: "ap_ar_trans"},
+	"rc":                  {name: "receipt", transFlag: models.TransFlagARReceipt, table: "ap_ar_trans"},
 }
 
 // GET /api/v1/ic/doc-no/next?route=purchaseorder&prefix=BF-PO&format=YYMM####&doc_date=2026-05-25
 func (h *DocNoHandler) Next(c *gin.Context) {
 	route, ok := resolveDocNoRoute(c.Query("route"))
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "route must be saleorder, saleinvoice, creditnote, purchaseorder, or receipt"})
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "route must be saleorder, saleinvoice, saleinvoicecancel, creditnote, purchaseorder, or receipt"})
 		return
 	}
 	prefix := strings.TrimSpace(c.DefaultQuery("prefix", "BF"))
