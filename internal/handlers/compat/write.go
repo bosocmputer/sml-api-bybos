@@ -276,6 +276,7 @@ func (h *WriteHandler) DocumentProfileCapabilities(c *gin.Context) {
 		"max_items":           maxDocumentItems,
 		"max_text_characters": maxProfileTextRunes,
 		"profile_statuses":    []string{"pending", "complete", "needs_reconciliation", "terminal_failure"},
+		"correlation_header":  middleware.CorrelationIDHeader,
 	})
 }
 
@@ -528,6 +529,8 @@ func documentWriteResponse(p docPayload, existing bool, rows int, logResult erpL
 	}
 	if !existing {
 		response["rows_written"] = rows
+	}
+	if logResult.Warning != "" {
 		response["log_warning"] = logResult.Warning
 	}
 	if p.DocumentProfileVersion == "" {
@@ -1896,6 +1899,7 @@ func (h *WriteHandler) logWrite(c *gin.Context, route docRoute, docNo string, ro
 	}
 	fields := []zap.Field{
 		zap.String("request_id", c.GetString(middleware.RequestIDKey)),
+		zap.String("correlation_id", c.GetString(middleware.RequestIDKey)),
 		zap.String("tenant", c.GetString(middleware.TenantKey)),
 		zap.String("route", route.name),
 		zap.String("doc_no", docNo),

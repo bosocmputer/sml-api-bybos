@@ -3,6 +3,7 @@ package compat
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,11 +23,12 @@ func TestDocumentProfileCapabilityIsExplicitAndVersioned(t *testing.T) {
 	}
 	var response struct {
 		Data struct {
-			Capability string   `json:"capability"`
-			Versions   []string `json:"versions"`
-			MaxBytes   int64    `json:"max_request_bytes"`
-			MaxItems   int      `json:"max_items"`
-			MaxText    int      `json:"max_text_characters"`
+			Capability        string   `json:"capability"`
+			Versions          []string `json:"versions"`
+			MaxBytes          int64    `json:"max_request_bytes"`
+			MaxItems          int      `json:"max_items"`
+			MaxText           int      `json:"max_text_characters"`
+			CorrelationHeader string   `json:"correlation_header"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
@@ -37,6 +39,9 @@ func TestDocumentProfileCapabilityIsExplicitAndVersioned(t *testing.T) {
 	}
 	if response.Data.MaxBytes != maxDocumentRequestBytes || response.Data.MaxItems != maxDocumentItems || response.Data.MaxText != maxProfileTextRunes {
 		t.Fatalf("unexpected limits: %+v", response.Data)
+	}
+	if response.Data.CorrelationHeader != "X-Correlation-ID" {
+		t.Fatalf("unexpected correlation header: %+v", response.Data)
 	}
 }
 
@@ -51,6 +56,20 @@ func TestLegacyDocumentResponseContractDoesNotGainProfileFields(t *testing.T) {
 		if _, ok := response[key]; ok {
 			t.Fatalf("legacy response unexpectedly contains %q: %+v", key, response)
 		}
+	}
+}
+
+func TestProfileResponseKeepsCoreSuccessWhenLogsDatabaseIsDown(t *testing.T) {
+	payload := profilePayloadForTest()
+	payload.ProfilePayloadHash = strings.Repeat("a", 64)
+	response := documentWriteResponse(payload, false, 4, erpLogResult{
+		Status: "warning", Warning: "บันทึก SML erp_logs ไม่สำเร็จ: เชื่อมต่อฐานข้อมูล logs ไม่ได้",
+	})
+	if response["core_status"] != "created" || response["profile_status"] != "needs_reconciliation" || response["reconciliation_required"] != true {
+		t.Fatalf("response=%+v", response)
+	}
+	if !strings.Contains(response["log_warning"].(string), "erp_logs") {
+		t.Fatalf("safe recovery cause missing: %+v", response)
 	}
 }
 
@@ -77,6 +96,92 @@ func TestNormalizeAndValidateDocumentProfileBoundaryChecks(t *testing.T) {
 	valid.Details = make([]docItem, maxDocumentItems+1)
 	if err := normalizeAndValidate(&valid, valid.Details, routeSaleInvoice); err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("oversized item count error=%v", err)
+	}
+}
+
+func TestDocumentProfileRejectsOversizedBodyBeforeDatabaseAccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/ic/sale-invoices",
+		strings.NewReader(`{"padding":"`+strings.Repeat("x", int(maxDocumentRequestBytes)+1)+`"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	NewWriteHandler(nil, nil).CreateSaleInvoice(ctx)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "invalid_json") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestDocumentProfileRequiresAuthenticatedTenantBeforeDatabaseAccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	payload := profilePayloadForTest()
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/ic/sale-invoices", strings.NewReader(string(body)))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	NewWriteHandler(nil, nil).CreateSaleInvoice(ctx)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "tenant_required") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestProfileMainLogEscapesHTMLAsLiteralData(t *testing.T) {
+	payload := profilePayloadForTest()
+	payload.Remark = `<script>alert("x")</script>`
+	if err := normalizeAndValidate(&payload, payload.Details, routeSaleInvoice); err != nil {
+		t.Fatal(err)
+	}
+	encoded := buildMainLogData1(payload)
+	if strings.Contains(encoded, "<script>") || strings.Contains(encoded, "</script>") {
+		t.Fatalf("script markup was not escaped: %s", encoded)
+	}
+}
+
+func BenchmarkDocumentProfileNormalizeAndCanonicalHash(b *testing.B) {
+	for _, itemCount := range []int{1, 10, 50, 200} {
+		b.Run(fmt.Sprintf("items_%d", itemCount), func(b *testing.B) {
+			base := profilePayloadForTest()
+			base.VATRate = 0
+			base.VATRateDecimal = "0"
+			base.TotalValue = float64(itemCount)
+			base.TotalBeforeVAT = float64(itemCount)
+			base.TotalAfterVAT = float64(itemCount)
+			base.TotalAmount = float64(itemCount)
+			base.TotalValueDecimal = fmt.Sprintf("%d.00", itemCount)
+			base.TotalBeforeVATDecimal = fmt.Sprintf("%d.00", itemCount)
+			base.TotalAfterVATDecimal = fmt.Sprintf("%d.00", itemCount)
+			base.TotalAmountDecimal = fmt.Sprintf("%d.00", itemCount)
+			base.TotalVATValue = 0
+			base.TotalVATValueDecimal = "0.00"
+			base.Details = make([]docItem, itemCount)
+			for i := range base.Details {
+				base.Details[i] = docItem{
+					ItemCode: fmt.Sprintf("ITEM-%03d", i), UnitCode: "EA", LineNumber: i,
+					Qty: 1, Price: 1, PriceExcludeVAT: 1, SumAmount: 1, SumAmountExclVAT: 1,
+					QtyDecimal: "1", PriceDecimal: "1", PriceExcludeVATDecimal: "1",
+					DiscountAmountDecimal: "0", SumAmountDecimal: "1", VATAmountDecimal: "0",
+					SumAmountExclVATDecimal: "1",
+				}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				payload := base
+				payload.Details = append([]docItem(nil), base.Details...)
+				if err := normalizeAndValidate(&payload, payload.Details, routeSaleInvoice); err != nil {
+					b.Fatal(err)
+				}
+				if _, err := canonicalProfileHash("aoy", payload, payload.Details, routeSaleInvoice); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 

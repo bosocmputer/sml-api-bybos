@@ -13,6 +13,7 @@ func Logger(log *zap.Logger) gin.HandlerFunc {
 		c.Next()
 		log.Info("request",
 			zap.String("request_id", c.GetString(RequestIDKey)),
+			zap.String("correlation_id", c.GetString(RequestIDKey)),
 			zap.String("method", c.Request.Method),
 			zap.String("path", c.Request.URL.Path),
 			zap.Int("status", c.Writer.Status()),

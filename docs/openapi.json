@@ -1416,7 +1416,7 @@
           "success": {"type": "boolean"},
           "data": {
             "type": "object",
-            "required": ["capability", "versions", "max_request_bytes", "max_items", "max_text_characters", "profile_statuses"],
+            "required": ["capability", "versions", "max_request_bytes", "max_items", "max_text_characters", "profile_statuses", "correlation_header"],
             "properties": {
               "capability": {"type": "string", "enum": ["sml_document_profile"]},
               "versions": {"type": "array", "items": {"type": "string", "enum": ["sml-document-v1"]}},
@@ -1426,7 +1426,8 @@
               "profile_statuses": {
                 "type": "array",
                 "items": {"type": "string", "enum": ["pending", "complete", "needs_reconciliation", "terminal_failure"]}
-              }
+              },
+              "correlation_header": {"type": "string", "enum": ["X-Correlation-ID"]}
             }
           }
         }
