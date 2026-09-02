@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -21,6 +23,13 @@ import (
 	"sml-api-bybos/internal/middleware"
 	"sml-api-bybos/internal/models"
 	"sml-api-bybos/internal/setproducts"
+)
+
+const (
+	documentProfileV1       = "sml-document-v1"
+	maxDocumentRequestBytes = int64(2 << 20)
+	maxDocumentItems        = 500
+	maxProfileTextRunes     = 255
 )
 
 type WriteHandler struct {
@@ -87,39 +96,56 @@ type erpLogResult struct {
 }
 
 type docPayload struct {
-	DocNo          string    `json:"doc_no"`
-	DocDate        string    `json:"doc_date"`
-	DocTime        string    `json:"doc_time"`
-	DocRef         string    `json:"doc_ref"`
-	DocRefDate     string    `json:"doc_ref_date"`
-	DocFormatCode  string    `json:"doc_format_code"`
-	CustCode       string    `json:"cust_code"`
-	SupplierName   string    `json:"supplier_name"`
-	SaleCode       string    `json:"sale_code"`
-	BranchCode     string    `json:"branch_code"`
-	WHCode         string    `json:"wh_code"`
-	ShelfCode      string    `json:"shelf_code"`
-	WHFrom         string    `json:"wh_from"`
-	LocationFrom   string    `json:"location_from"`
-	SaleType       int       `json:"sale_type"`
-	BuyType        int       `json:"buy_type"`
-	VATType        int       `json:"vat_type"`
-	VATRate        float64   `json:"vat_rate"`
-	TotalValue     float64   `json:"total_value"`
-	TotalDiscount  float64   `json:"total_discount"`
-	TotalBeforeVAT float64   `json:"total_before_vat"`
-	TotalVATValue  float64   `json:"total_vat_value"`
-	TotalExceptVAT float64   `json:"total_except_vat"`
-	TotalAfterVAT  float64   `json:"total_after_vat"`
-	TotalAmount    float64   `json:"total_amount"`
-	InquiryType    int       `json:"inquiry_type"`
-	Remark         string    `json:"remark"`
-	Remark2        string    `json:"remark_2"`
-	Remark5        string    `json:"remark_5"`
-	UserRequest    string    `json:"user_request"`
-	ExpandSetItems bool      `json:"expand_set_items"`
-	Items          []docItem `json:"items"`
-	Details        []docItem `json:"details"`
+	DocumentProfileVersion   string       `json:"document_profile_version"`
+	MarketplacePhysicalGoods bool         `json:"marketplace_physical_goods"`
+	ShipmentApplicability    string       `json:"shipment_applicability"`
+	Shipment                 *docShipment `json:"shipment,omitempty"`
+	CreatorCode              string       `json:"creator_code"`
+	CashierCode              string       `json:"cashier_code"`
+	CurrencyCode             string       `json:"currency_code"`
+	ExchangeRateDecimal      string       `json:"exchange_rate_decimal"`
+	DocNo                    string       `json:"doc_no"`
+	DocDate                  string       `json:"doc_date"`
+	DocTime                  string       `json:"doc_time"`
+	DocRef                   string       `json:"doc_ref"`
+	DocRefDate               string       `json:"doc_ref_date"`
+	DocFormatCode            string       `json:"doc_format_code"`
+	CustCode                 string       `json:"cust_code"`
+	SupplierName             string       `json:"supplier_name"`
+	SaleCode                 string       `json:"sale_code"`
+	BranchCode               string       `json:"branch_code"`
+	WHCode                   string       `json:"wh_code"`
+	ShelfCode                string       `json:"shelf_code"`
+	WHFrom                   string       `json:"wh_from"`
+	LocationFrom             string       `json:"location_from"`
+	SaleType                 int          `json:"sale_type"`
+	BuyType                  int          `json:"buy_type"`
+	VATType                  int          `json:"vat_type"`
+	VATRate                  float64      `json:"vat_rate"`
+	VATRateDecimal           string       `json:"vat_rate_decimal"`
+	TotalValue               float64      `json:"total_value"`
+	TotalDiscount            float64      `json:"total_discount"`
+	TotalBeforeVAT           float64      `json:"total_before_vat"`
+	TotalVATValue            float64      `json:"total_vat_value"`
+	TotalExceptVAT           float64      `json:"total_except_vat"`
+	TotalAfterVAT            float64      `json:"total_after_vat"`
+	TotalAmount              float64      `json:"total_amount"`
+	TotalValueDecimal        string       `json:"total_value_decimal"`
+	TotalDiscountDecimal     string       `json:"total_discount_decimal"`
+	TotalBeforeVATDecimal    string       `json:"total_before_vat_decimal"`
+	TotalVATValueDecimal     string       `json:"total_vat_value_decimal"`
+	TotalExceptVATDecimal    string       `json:"total_except_vat_decimal"`
+	TotalAfterVATDecimal     string       `json:"total_after_vat_decimal"`
+	TotalAmountDecimal       string       `json:"total_amount_decimal"`
+	InquiryType              int          `json:"inquiry_type"`
+	Remark                   string       `json:"remark"`
+	Remark2                  string       `json:"remark_2"`
+	Remark5                  string       `json:"remark_5"`
+	UserRequest              string       `json:"user_request"`
+	ExpandSetItems           bool         `json:"expand_set_items"`
+	Items                    []docItem    `json:"items"`
+	Details                  []docItem    `json:"details"`
+	ProfilePayloadHash       string       `json:"-"`
 }
 
 type updateCreditorPayload struct {
@@ -159,27 +185,40 @@ type updateDocRefResult struct {
 }
 
 type docItem struct {
-	DocRef           string  `json:"doc_ref"`
-	ItemCode         string  `json:"item_code"`
-	ItemName         string  `json:"item_name"`
-	LineNumber       int     `json:"line_number"`
-	IsPremium        int     `json:"is_permium"`
-	IsGetPrice       int     `json:"is_get_price"`
-	UnitCode         string  `json:"unit_code"`
-	WHCode           string  `json:"wh_code"`
-	ShelfCode        string  `json:"shelf_code"`
-	WHCode2          string  `json:"wh_code_2"`
-	ShelfCode2       string  `json:"shelf_code_2"`
-	Qty              float64 `json:"qty"`
-	Price            float64 `json:"price"`
-	PriceExcludeVAT  float64 `json:"price_exclude_vat"`
-	DiscountAmount   float64 `json:"discount_amount"`
-	SumAmount        float64 `json:"sum_amount"`
-	VATAmount        float64 `json:"vat_amount"`
-	TotalVATValue    float64 `json:"total_vat_value"`
-	TaxType          int     `json:"tax_type"`
-	VATType          int     `json:"vat_type"`
-	SumAmountExclVAT float64 `json:"sum_amount_exclude_vat"`
+	DocRef                  string  `json:"doc_ref"`
+	ItemCode                string  `json:"item_code"`
+	ItemName                string  `json:"item_name"`
+	LineNumber              int     `json:"line_number"`
+	IsPremium               int     `json:"is_permium"`
+	IsGetPrice              int     `json:"is_get_price"`
+	UnitCode                string  `json:"unit_code"`
+	WHCode                  string  `json:"wh_code"`
+	ShelfCode               string  `json:"shelf_code"`
+	WHCode2                 string  `json:"wh_code_2"`
+	ShelfCode2              string  `json:"shelf_code_2"`
+	Qty                     float64 `json:"qty"`
+	Price                   float64 `json:"price"`
+	PriceExcludeVAT         float64 `json:"price_exclude_vat"`
+	DiscountAmount          float64 `json:"discount_amount"`
+	SumAmount               float64 `json:"sum_amount"`
+	VATAmount               float64 `json:"vat_amount"`
+	TotalVATValue           float64 `json:"total_vat_value"`
+	TaxType                 int     `json:"tax_type"`
+	VATType                 int     `json:"vat_type"`
+	SumAmountExclVAT        float64 `json:"sum_amount_exclude_vat"`
+	QtyDecimal              string  `json:"qty_decimal"`
+	PriceDecimal            string  `json:"price_decimal"`
+	PriceExcludeVATDecimal  string  `json:"price_exclude_vat_decimal"`
+	DiscountAmountDecimal   string  `json:"discount_amount_decimal"`
+	SumAmountDecimal        string  `json:"sum_amount_decimal"`
+	VATAmountDecimal        string  `json:"vat_amount_decimal"`
+	SumAmountExclVATDecimal string  `json:"sum_amount_exclude_vat_decimal"`
+}
+
+type docShipment struct {
+	TransportName      string `json:"transport_name"`
+	TransportAddress   string `json:"transport_address"`
+	TransportTelephone string `json:"transport_telephone"`
 }
 
 type createProductUnit struct {
@@ -227,6 +266,17 @@ func (h *WriteHandler) CreateSaleInvoice(c *gin.Context) {
 
 func (h *WriteHandler) CreatePurchaseOrder(c *gin.Context) {
 	h.createDocument(c, routePurchaseOrder)
+}
+
+func (h *WriteHandler) DocumentProfileCapabilities(c *gin.Context) {
+	api.OK(c, gin.H{
+		"capability":          "sml_document_profile",
+		"versions":            []string{documentProfileV1},
+		"max_request_bytes":   maxDocumentRequestBytes,
+		"max_items":           maxDocumentItems,
+		"max_text_characters": maxProfileTextRunes,
+		"profile_statuses":    []string{"pending", "complete", "needs_reconciliation", "terminal_failure"},
+	})
 }
 
 func (h *WriteHandler) UpdatePurchaseOrderCreditor(c *gin.Context) {
@@ -283,6 +333,7 @@ func (h *WriteHandler) UpdatePurchaseOrderCreditor(c *gin.Context) {
 func (h *WriteHandler) createDocument(c *gin.Context, route docRoute) {
 	start := time.Now()
 	var p docPayload
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxDocumentRequestBytes)
 	if err := c.ShouldBindJSON(&p); err != nil {
 		api.BadRequest(c, "invalid_json", "invalid request body", err.Error())
 		h.logWrite(c, route, p.DocNo, 0, start, "invalid_json")
@@ -296,6 +347,21 @@ func (h *WriteHandler) createDocument(c *gin.Context, route docRoute) {
 		api.BadRequest(c, "validation_failed", err.Error(), nil)
 		h.logWrite(c, route, p.DocNo, 0, start, "validation_failed")
 		return
+	}
+	if p.DocumentProfileVersion != "" {
+		tenant := strings.TrimSpace(c.GetString(middleware.TenantKey))
+		if tenant == "" {
+			api.BadRequest(c, "tenant_required", "authenticated tenant context is required for document profile", nil)
+			h.logWrite(c, route, p.DocNo, 0, start, "tenant_required")
+			return
+		}
+		payloadHash, err := canonicalProfileHash(tenant, p, items, route)
+		if err != nil {
+			api.BadRequest(c, "profile_hash_failed", "canonical document profile could not be built", nil)
+			h.logWrite(c, route, p.DocNo, 0, start, "profile_hash_failed")
+			return
+		}
+		p.ProfilePayloadHash = payloadHash
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
@@ -318,23 +384,29 @@ func (h *WriteHandler) createDocument(c *gin.Context, route docRoute) {
 		h.logWrite(c, route, p.DocNo, rows, start, "document_write_failed")
 		return
 	}
-	if existing {
-		api.OK(c, gin.H{"doc_no": p.DocNo, "status": "already_exists", "log_status": "skipped"})
+	if existing && p.DocumentProfileVersion == "" {
+		api.OK(c, documentWriteResponse(p, true, rows, erpLogResult{Status: "skipped"}))
 		h.logWrite(c, route, p.DocNo, rows, start, "already_exists")
 		return
 	}
-	logResult := h.writeERPLog(c, p, route)
-	api.Created(c, gin.H{
-		"doc_no":       p.DocNo,
-		"status":       "created",
-		"rows_written": rows,
-		"log_status":   logResult.Status,
-		"log_warning":  logResult.Warning,
-	})
+	logResult := h.writeERPLog(c, p, route, p.DocumentProfileVersion != "")
+	if existing {
+		api.OK(c, documentWriteResponse(p, true, rows, logResult))
+		h.logWrite(c, route, p.DocNo, rows, start, "already_exists_reconciled")
+		return
+	}
+	api.Created(c, documentWriteResponse(p, false, rows, logResult))
 	h.logWrite(c, route, p.DocNo, rows, start, "")
 }
 
 func normalizeAndValidate(p *docPayload, items []docItem, route docRoute) error {
+	p.DocumentProfileVersion = strings.TrimSpace(p.DocumentProfileVersion)
+	if p.DocumentProfileVersion != "" && p.DocumentProfileVersion != documentProfileV1 {
+		return fmt.Errorf("document_profile_version must be %q", documentProfileV1)
+	}
+	if p.DocumentProfileVersion != "" && route.name != routeSaleInvoice.name {
+		return fmt.Errorf("document_profile_version is supported only for sale invoices")
+	}
 	p.DocNo = strings.TrimSpace(p.DocNo)
 	p.DocDate = strings.TrimSpace(p.DocDate)
 	p.DocTime = strings.TrimSpace(p.DocTime)
@@ -370,6 +442,12 @@ func normalizeAndValidate(p *docPayload, items []docItem, route docRoute) error 
 	if p.VATType < 0 || p.VATType > 2 {
 		return fmt.Errorf("vat_type must be 0, 1, or 2")
 	}
+	if err := validateProfileText("remark", p.Remark); err != nil {
+		return err
+	}
+	if err := validateProfileText("remark_2", p.Remark2); err != nil {
+		return err
+	}
 	headerMoney := []struct {
 		name  string
 		value float64
@@ -386,6 +464,12 @@ func normalizeAndValidate(p *docPayload, items []docItem, route docRoute) error 
 	}
 	if len(items) == 0 {
 		return fmt.Errorf("%s must contain at least one item", route.itemKey)
+	}
+	if len(items) > maxDocumentItems {
+		return fmt.Errorf("%s must not contain more than %d items", route.itemKey, maxDocumentItems)
+	}
+	if err := normalizeAndValidateProfile(p, items, route); err != nil {
+		return err
 	}
 	for i := range items {
 		if strings.TrimSpace(items[i].ItemCode) == "" {
@@ -417,6 +501,70 @@ func normalizeAndValidate(p *docPayload, items []docItem, route docRoute) error 
 	return nil
 }
 
+func validateProfileText(field, value string) error {
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%s must be valid UTF-8", field)
+	}
+	if utf8.RuneCountInString(value) > maxProfileTextRunes {
+		return fmt.Errorf("%s must not exceed %d Unicode characters", field, maxProfileTextRunes)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%s must not contain control characters", field)
+		}
+	}
+	return nil
+}
+
+func documentWriteResponse(p docPayload, existing bool, rows int, logResult erpLogResult) gin.H {
+	status := "created"
+	if existing {
+		status = "already_exists"
+	}
+	response := gin.H{
+		"doc_no":     p.DocNo,
+		"status":     status,
+		"log_status": logResult.Status,
+	}
+	if !existing {
+		response["rows_written"] = rows
+		response["log_warning"] = logResult.Warning
+	}
+	if p.DocumentProfileVersion == "" {
+		return response
+	}
+	response["payload_hash"] = p.ProfilePayloadHash
+	response["core_status"] = status
+	required := []string{"core"}
+	if p.VATRate > 0 && (p.VATType == 1 || p.VATType == 2) {
+		required = append(required, "vat")
+	}
+	if p.ShipmentApplicability == "required" {
+		required = append(required, "shipment")
+	}
+	required = append(required, "main_log", "erp_log")
+	completed := []string{"core"}
+	profileStatus := "needs_reconciliation"
+	if p.VATRate > 0 && (p.VATType == 1 || p.VATType == 2) {
+		completed = append(completed, "vat")
+	}
+	if p.ShipmentApplicability == "required" {
+		completed = append(completed, "shipment")
+	}
+	completed = append(completed, "main_log")
+	if logResult.Status == "created" || logResult.Status == "skipped" || logResult.Status == "updated" {
+		completed = append(completed, "erp_log")
+		profileStatus = "complete"
+	}
+	sort.Strings(required)
+	sort.Strings(completed)
+	response["profile_status"] = profileStatus
+	response["required_checks"] = required
+	response["completed_checks"] = completed
+	response["reconciliation_required"] = profileStatus != "complete"
+	return response
+}
+
 func validDocumentMoney(value float64) bool {
 	const maxAbsoluteMoney = 9_000_000_000_000_000.0
 	return !math.IsNaN(value) && !math.IsInf(value, 0) && math.Abs(value) <= maxAbsoluteMoney
@@ -427,13 +575,13 @@ type erpLogPool interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
-func (h *WriteHandler) writeERPLog(c *gin.Context, p docPayload, route docRoute) erpLogResult {
+func (h *WriteHandler) writeERPLog(c *gin.Context, p docPayload, route docRoute, explicitReconciliation bool) erpLogResult {
 	tenant := strings.TrimSpace(c.GetString(middleware.TenantKey))
 	if tenant == "" {
 		return erpLogResult{Status: "warning", Warning: "บันทึก SML erp_logs ไม่สำเร็จ: ไม่พบ tenant ของร้าน"}
 	}
 	logDB := tenant + "_logs"
-	if cached, ok := h.cachedERPLogAvailability(logDB); ok && !cached.available {
+	if cached, ok := h.cachedERPLogAvailability(logDB); ok && !cached.available && !explicitReconciliation {
 		return erpLogResult{Status: "warning", Warning: cached.message}
 	}
 
@@ -452,7 +600,20 @@ func (h *WriteHandler) writeERPLog(c *gin.Context, p docPayload, route docRoute)
 		}
 		return erpLogResult{Status: "warning", Warning: msg}
 	}
-	status, err := insertERPLog(ctx, pool, p, route)
+	tx, err := pool.Begin(ctx)
+	if err == nil {
+		_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,
+			fmt.Sprintf("%s:%d:%s", tenant, route.transFlag, p.DocNo))
+	}
+	status := "warning"
+	if err == nil {
+		status, err = insertERPLog(ctx, tx, p, route)
+	}
+	if err == nil {
+		err = tx.Commit(ctx)
+	} else if tx != nil {
+		_ = tx.Rollback(ctx)
+	}
 	if err != nil {
 		msg := erpLogWarningMessage(logDB, err)
 		h.setERPLogAvailability(logDB, false, msg)
@@ -477,17 +638,62 @@ func insertERPLog(ctx context.Context, pool erpLogPool, p docPayload, route docR
 		return "warning", fmt.Errorf("parse doc_date for erp_logs: %w", err)
 	}
 	var exists bool
+	duplicateCondition := `doc_no=$1 AND trans_flag=$2 AND function_code=1
+			  AND COALESCE(menu_name,'') LIKE 'BillFlow%'`
+	if p.DocumentProfileVersion == documentProfileV1 {
+		duplicateCondition += ` AND data_new IS NOT NULL AND octet_length(data_new)>0`
+	}
 	if err := pool.QueryRow(ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM erp_logs
-			WHERE doc_no=$1 AND trans_flag=$2 AND function_code=1
-			  AND COALESCE(menu_name,'') LIKE 'BillFlow%'
+			WHERE `+duplicateCondition+`
 			LIMIT 1
 		)`, p.DocNo, route.transFlag).Scan(&exists); err != nil {
 		return "warning", fmt.Errorf("check duplicate erp_logs: %w", err)
 	}
 	if exists {
 		return "skipped", nil
+	}
+	if p.DocumentProfileVersion == documentProfileV1 {
+		dataNew, err := buildERPLogDataNew(p)
+		if err != nil {
+			return "warning", fmt.Errorf("build erp_logs data_new: %w", err)
+		}
+		tag, err := pool.Exec(ctx, `
+			UPDATE erp_logs SET
+				data_new=$1, cust_code=$2, user_code='BILLFLOW', computer_name='NEXFLOW',
+				doc_amount=$3, date_time=NOW()
+			WHERE roworder=(
+				SELECT roworder FROM erp_logs
+				 WHERE doc_no=$4 AND trans_flag=$5 AND function_code=1
+				   AND COALESCE(menu_name,'') LIKE 'BillFlow%'
+				 ORDER BY roworder LIMIT 1
+			) AND (data_new IS NULL OR octet_length(data_new)=0)`,
+			dataNew, p.CustCode, p.TotalAmountDecimal, p.DocNo, route.transFlag)
+		if err != nil {
+			return "warning", fmt.Errorf("update profile erp_logs: %w", err)
+		}
+		if tag.RowsAffected() > 0 {
+			return "updated", nil
+		}
+		_, err = pool.Exec(ctx, `
+			INSERT INTO erp_logs (
+				doc_no, doc_date, doc_time, cust_code, user_code, date_time,
+				trans_flag, trans_type, computer_name, function_code, menu_name,
+				doc_amount, data_new
+			) VALUES (
+				$1,$2,$3,$4,$5,NOW(),
+				$6,$7,$8,$9,$10,
+				$11,$12
+			)`,
+			p.DocNo, docDate, p.DocTime, p.CustCode, "BILLFLOW",
+			route.transFlag, route.transType, "NEXFLOW", 1, route.menuName,
+			p.TotalAmountDecimal, dataNew,
+		)
+		if err != nil {
+			return "warning", fmt.Errorf("insert profile erp_logs: %w", err)
+		}
+		return "created", nil
 	}
 	_, err = pool.Exec(ctx, `
 		INSERT INTO erp_logs (
@@ -576,6 +782,23 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 		if !matches {
 			return 0, false, newAppError(http.StatusConflict, "doc_no_payload_mismatch", "doc_no already exists with a different customer, item, quantity, or total", gin.H{"doc_no": p.DocNo})
 		}
+		if p.DocumentProfileVersion == documentProfileV1 {
+			storedHash, err := storedProfileHash(ctx, tx, p.DocNo, route.transFlag)
+			if err != nil {
+				return 0, false, fmt.Errorf("load existing profile hash: %w", err)
+			}
+			if err := validateStoredProfileHash(storedHash, p.ProfilePayloadHash, p.DocNo); err != nil {
+				return 0, false, err
+			}
+			rows, err := writeProfileRelations(ctx, tx, p, route, p.ProfilePayloadHash)
+			if err != nil {
+				return rows, false, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return rows, false, fmt.Errorf("commit existing profile reconciliation: %w", err)
+			}
+			return rows, true, nil
+		}
 		return 0, true, nil
 	}
 	products, err := validateRefs(ctx, tx, tenant, p, items, route)
@@ -585,6 +808,9 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 	preparedItems, err := prepareDocumentItems(p, items, route, products)
 	if err != nil {
 		return 0, false, err
+	}
+	if p.DocumentProfileVersion == documentProfileV1 {
+		ensurePreparedProfileDecimals(preparedItems)
 	}
 
 	docDate, _ := time.Parse("2006-01-02", p.DocDate)
@@ -596,10 +822,25 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 		}
 		docRefDate = d
 	}
+	var taxDocNo, currencyCode, creatorCode, cashierCode string
+	var taxDocDate, sendDate, creditDate any
+	var exchangeRate any = float64(0)
+	if p.DocumentProfileVersion == documentProfileV1 {
+		taxDocNo = p.DocNo
+		taxDocDate = docDate
+		sendDate = docDate
+		creditDate = docDate
+		currencyCode = p.CurrencyCode
+		exchangeRate = p.ExchangeRateDecimal
+		creatorCode = p.CreatorCode
+		cashierCode = p.CashierCode
+	}
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO ic_trans (
 			trans_type, trans_flag, doc_date, doc_no, doc_time, doc_format_code,
+			tax_doc_no, tax_doc_date, send_date, credit_date,
+			currency_code, exchange_rate, creator_code, cashier_code,
 			cust_code, branch_code, sale_code,
 			wh_from, location_from,
 			vat_type, vat_rate,
@@ -608,19 +849,29 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 			doc_ref, doc_ref_date, inquiry_type, remark, remark_2, remark_5, user_request, last_status
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,
-			$7,$8,$9,
-			$10,$11,
-			$12,$13,
-			$14,$15,$16,$17,
-			$18,$19,$20,$21,
-			$22,$23,$24,$25,$26,$27,$28,0
+			$7,$8,$9,$10,
+			$11,$12,$13,$14,
+			$15,$16,$17,
+			$18,$19,
+			$20,$21,
+			$22,$23,$24,$25,
+			$26,$27,$28,$29,
+			$30,$31,$32,$33,$34,$35,$36,0
 		)`,
 		route.transType, route.transFlag, docDate, p.DocNo, p.DocTime, p.DocFormatCode,
+		taxDocNo, taxDocDate, sendDate, creditDate,
+		currencyCode, exchangeRate, creatorCode, cashierCode,
 		p.CustCode, p.BranchCode, p.SaleCode,
 		p.WHCode, p.ShelfCode,
-		p.VATType, p.VATRate,
-		p.TotalValue, p.TotalVATValue, p.TotalAfterVAT, p.TotalAmount,
-		p.TotalBeforeVAT, p.TotalDiscount, headerDiscountWord(p.TotalDiscount), p.TotalExceptVAT,
+		p.VATType, profileDecimalArg(p.DocumentProfileVersion, p.VATRateDecimal, p.VATRate),
+		profileDecimalArg(p.DocumentProfileVersion, p.TotalValueDecimal, p.TotalValue),
+		profileDecimalArg(p.DocumentProfileVersion, p.TotalVATValueDecimal, p.TotalVATValue),
+		profileDecimalArg(p.DocumentProfileVersion, p.TotalAfterVATDecimal, p.TotalAfterVAT),
+		profileDecimalArg(p.DocumentProfileVersion, p.TotalAmountDecimal, p.TotalAmount),
+		profileDecimalArg(p.DocumentProfileVersion, p.TotalBeforeVATDecimal, p.TotalBeforeVAT),
+		profileDecimalArg(p.DocumentProfileVersion, p.TotalDiscountDecimal, p.TotalDiscount),
+		headerDiscountWord(p.TotalDiscount),
+		profileDecimalArg(p.DocumentProfileVersion, p.TotalExceptVATDecimal, p.TotalExceptVAT),
 		p.DocRef, docRefDate, p.InquiryType, p.Remark, p.Remark2, p.Remark5, p.UserRequest,
 	)
 	if err != nil {
@@ -705,9 +956,14 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 			p.CustCode, p.DocTime, calcFlag, p.InquiryType,
 			strings.TrimSpace(it.ItemCode), it.ItemName, strings.TrimSpace(it.UnitCode), it.IsPremium, isGetPrice,
 			wh, shelf, wh2, shelf2,
-			it.Qty, it.Price, priceExc,
-			it.DiscountAmount, fmt.Sprintf("%v", it.DiscountAmount), vatValue,
-			sumAmount, sumExc,
+			profileDecimalArg(p.DocumentProfileVersion, it.QtyDecimal, it.Qty),
+			profileDecimalArg(p.DocumentProfileVersion, it.PriceDecimal, it.Price),
+			profileDecimalArg(p.DocumentProfileVersion, it.PriceExcludeVATDecimal, priceExc),
+			profileDecimalArg(p.DocumentProfileVersion, it.DiscountAmountDecimal, it.DiscountAmount),
+			firstNonEmpty(it.DiscountAmountDecimal, fmt.Sprintf("%v", it.DiscountAmount)),
+			profileDecimalArg(p.DocumentProfileVersion, it.VATAmountDecimal, vatValue),
+			profileDecimalArg(p.DocumentProfileVersion, it.SumAmountDecimal, sumAmount),
+			profileDecimalArg(p.DocumentProfileVersion, it.SumAmountExclVATDecimal, sumExc),
 			it.TaxType, p.VATType,
 			docRef, p.BranchCode,
 			prepared.ItemType, prepared.RefGUID, prepared.SetRefPrice, prepared.SetRefQty,
@@ -721,6 +977,13 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 
 	if err := normalizeInsertedDocument(ctx, tx, p.DocNo, route.transFlag); err != nil {
 		return rowsWritten, false, err
+	}
+	if p.DocumentProfileVersion == documentProfileV1 {
+		profileRows, err := writeProfileRelations(ctx, tx, p, route, p.ProfilePayloadHash)
+		if err != nil {
+			return rowsWritten, false, err
+		}
+		rowsWritten += profileRows
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return rowsWritten, false, fmt.Errorf("commit: %w", err)
@@ -781,6 +1044,23 @@ func compareDocumentAfterUniqueConflict(ctx context.Context, pool txBeginner, p 
 	}
 	if !matches {
 		return 0, false, newAppError(http.StatusConflict, "doc_no_payload_mismatch", "doc_no already exists with a different customer, item, quantity, or total", gin.H{"doc_no": p.DocNo})
+	}
+	if p.DocumentProfileVersion == documentProfileV1 {
+		storedHash, err := storedProfileHash(ctx, tx, p.DocNo, route.transFlag)
+		if err != nil {
+			return 0, false, fmt.Errorf("load concurrent profile hash: %w", err)
+		}
+		if err := validateStoredProfileHash(storedHash, p.ProfilePayloadHash, p.DocNo); err != nil {
+			return 0, false, err
+		}
+		rows, err := writeProfileRelations(ctx, tx, p, route, p.ProfilePayloadHash)
+		if err != nil {
+			return rows, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return rows, false, fmt.Errorf("commit concurrent profile reconciliation: %w", err)
+		}
+		return rows, true, nil
 	}
 	return 0, true, nil
 }
@@ -923,10 +1203,21 @@ func normalizeDocItem(item docItem) docItem {
 func existingDocumentMatches(ctx context.Context, tx pgx.Tx, p docPayload, items []docItem, route docRoute) (bool, error) {
 	var custCode string
 	var totalValue, totalDiscount, totalVAT, totalAmount float64
+	var docDate, docTime, docFormat, branchCode, saleCode, whCode, shelfCode, remark, remark2, remark5, userRequest string
+	var vatType int
+	var vatRate float64
 	err := tx.QueryRow(ctx, `SELECT COALESCE(cust_code,''), COALESCE(total_value,0)::float8,
 		COALESCE(total_discount,0)::float8, COALESCE(total_vat_value,0)::float8, COALESCE(total_amount,0)::float8
+		,COALESCE(doc_date::text,''),COALESCE(doc_time,''),COALESCE(doc_format_code,''),
+		COALESCE(branch_code,''),COALESCE(sale_code,''),COALESCE(wh_from,''),COALESCE(location_from,''),
+		COALESCE(vat_type,0)::int,COALESCE(vat_rate,0)::float8,COALESCE(remark,''),COALESCE(remark_2,''),
+		COALESCE(remark_5,''),COALESCE(user_request,'')
 		FROM ic_trans WHERE doc_no=$1 AND trans_flag=$2 AND COALESCE(last_status,0)=0
-		FOR UPDATE`, p.DocNo, route.transFlag).Scan(&custCode, &totalValue, &totalDiscount, &totalVAT, &totalAmount)
+		FOR UPDATE`, p.DocNo, route.transFlag).Scan(
+		&custCode, &totalValue, &totalDiscount, &totalVAT, &totalAmount,
+		&docDate, &docTime, &docFormat, &branchCode, &saleCode, &whCode, &shelfCode,
+		&vatType, &vatRate, &remark, &remark2, &remark5, &userRequest,
+	)
 	if err != nil {
 		return false, fmt.Errorf("load existing document header: %w", err)
 	}
@@ -937,9 +1228,18 @@ func existingDocumentMatches(ctx context.Context, tx pgx.Tx, p docPayload, items
 		absCents(setproducts.MoneyToCents(totalAmount)-setproducts.MoneyToCents(p.TotalAmount)) > 1 {
 		return false, nil
 	}
+	if p.DocumentProfileVersion == documentProfileV1 && (docDate != p.DocDate || docTime != p.DocTime || docFormat != p.DocFormatCode ||
+		branchCode != p.BranchCode || saleCode != p.SaleCode || whCode != p.WHCode || shelfCode != p.ShelfCode ||
+		vatType != p.VATType || math.Abs(vatRate-p.VATRate) > 0.000001 ||
+		remark != p.Remark || remark2 != p.Remark2 || remark5 != p.Remark5 || userRequest != p.UserRequest) {
+		return false, nil
+	}
 	rows, err := tx.Query(ctx, `SELECT COALESCE(item_code,''), COALESCE(qty,0)::float8,
 		COALESCE(sum_amount,0)::float8, COALESCE(item_type,0)::int,
-		COALESCE(item_code_main,''), COALESCE(set_ref_line,''), COALESCE(ref_guid,'')
+		COALESCE(item_code_main,''), COALESCE(set_ref_line,''), COALESCE(ref_guid,''),
+		COALESCE(line_number,0)::int,COALESCE(unit_code,''),COALESCE(wh_code,''),COALESCE(shelf_code,''),
+		COALESCE(price,0)::float8,COALESCE(discount_amount,0)::float8,
+		COALESCE(total_vat_value,0)::float8,COALESCE(sum_amount_exclude_vat,0)::float8
 		FROM ic_trans_detail
 		WHERE doc_no=$1 AND trans_flag=$2 AND COALESCE(last_status,0)=0
 		ORDER BY COALESCE(line_number,0)`, p.DocNo, route.transFlag)
@@ -948,15 +1248,16 @@ func existingDocumentMatches(ctx context.Context, tx pgx.Tx, p docPayload, items
 	}
 	defer rows.Close()
 	type existingLine struct {
-		code, mainCode, setRefLine, refGUID string
-		qty, sum                            float64
-		itemType                            int
+		code, mainCode, setRefLine, refGUID, unitCode, whCode, shelfCode string
+		qty, sum, price, discount, vat, beforeVAT                        float64
+		itemType, lineNumber                                             int
 	}
 	parents := make([]existingLine, 0)
 	childCountByRef := map[string]int{}
 	for rows.Next() {
 		var line existingLine
-		if err := rows.Scan(&line.code, &line.qty, &line.sum, &line.itemType, &line.mainCode, &line.setRefLine, &line.refGUID); err != nil {
+		if err := rows.Scan(&line.code, &line.qty, &line.sum, &line.itemType, &line.mainCode, &line.setRefLine, &line.refGUID,
+			&line.lineNumber, &line.unitCode, &line.whCode, &line.shelfCode, &line.price, &line.discount, &line.vat, &line.beforeVAT); err != nil {
 			return false, fmt.Errorf("scan existing document detail: %w", err)
 		}
 		if strings.TrimSpace(line.mainCode) == "" {
@@ -976,6 +1277,14 @@ func existingDocumentMatches(ctx context.Context, tx pgx.Tx, p docPayload, items
 		if strings.TrimSpace(parents[i].code) != strings.TrimSpace(item.ItemCode) ||
 			math.Abs(parents[i].qty-item.Qty) > 0.000001 ||
 			absCents(setproducts.MoneyToCents(parents[i].sum)-setproducts.MoneyToCents(item.SumAmount)) > 1 {
+			return false, nil
+		}
+		if p.DocumentProfileVersion == documentProfileV1 && (parents[i].lineNumber != item.LineNumber || parents[i].unitCode != strings.TrimSpace(item.UnitCode) ||
+			parents[i].whCode != firstNonEmpty(item.WHCode, p.WHCode) || parents[i].shelfCode != firstNonEmpty(item.ShelfCode, p.ShelfCode) ||
+			math.Abs(parents[i].price-item.Price) > 0.000001 ||
+			absCents(setproducts.MoneyToCents(parents[i].discount)-setproducts.MoneyToCents(item.DiscountAmount)) > 1 ||
+			absCents(setproducts.MoneyToCents(parents[i].vat)-setproducts.MoneyToCents(item.VATAmount)) > 1 ||
+			absCents(setproducts.MoneyToCents(parents[i].beforeVAT)-setproducts.MoneyToCents(item.SumAmountExclVAT)) > 1) {
 			return false, nil
 		}
 		if p.ExpandSetItems && !existingSetParentHasChildren(parents[i].itemType, parents[i].refGUID, childCountByRef) {

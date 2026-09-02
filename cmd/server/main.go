@@ -121,6 +121,7 @@ func main() {
 
 	// Write — sale orders, invoices, purchase orders, products
 	cw := compat.NewWriteHandler(dbm, logger)
+	v1.GET("/ic/document-profile-capabilities", cw.DocumentProfileCapabilities)
 	v1.POST("/ic/sale-orders", cw.CreateSaleOrder)
 	v1.POST("/ic/sale-invoices", cw.CreateSaleInvoice)
 	v1.POST("/ic/sale-invoices/:doc_no/void/preview", cw.PreviewSaleInvoiceVoid)

@@ -247,7 +247,8 @@ Set-product fields เป็น contract กลางแบบ tenant-generic �
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/v1/ic/sale-orders` | สร้างใบสั่งขาย (sale order); `expand_set_items=true` เพื่อเขียน parent/child สินค้าชุด |
-| `POST` | `/api/v1/ic/sale-invoices` | สร้างใบกำกับภาษี (sale invoice); `expand_set_items=true` เพื่อเขียน parent/child สินค้าชุด |
+| `GET` | `/api/v1/ic/document-profile-capabilities` | อ่าน capability/limits ของ SML Document Profile แบบ opt-in |
+| `POST` | `/api/v1/ic/sale-invoices` | สร้างใบกำกับภาษี (sale invoice); `expand_set_items=true` เพื่อเขียน parent/child สินค้าชุด; ใส่ `document_profile_version=sml-document-v1` เพื่อเขียน VAT/shipment/main log ใน transaction เดียวและ reconcile `erp_logs` ภายหลัง |
 | `POST` | `/api/v1/ic/sale-invoices/:doc_no/void/preview` | Preview เอกสารยกเลิกขายสินค้าและบริการ (`TRANS_FLAG 45`, screen `SIC`) โดยไม่เขียนข้อมูล |
 | `POST` | `/api/v1/ic/sale-invoices/:doc_no/void` | สร้างเอกสารยกเลิกขายสินค้าและบริการแบบ header-only และยกเลิกใบขายเดิม; idempotent ตามใบขายต้นทาง |
 | `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel/preview` | Preview รับคืนสินค้า/ลดหนี้ (`TRANS_FLAG 48`, screen `ST`) โดยไม่เขียนข้อมูล |

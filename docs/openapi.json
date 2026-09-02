@@ -457,6 +457,30 @@
                 "example": "บันทึก SML erp_logs ไม่สำเร็จ: ไม่พบฐานข้อมูล aoy_logs",
                 "description": "User-safe warning when erp_logs cannot be written.",
                 "nullable": true
+              },
+              "payload_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$",
+                "description": "Canonical SHA-256 hash returned only for an opt-in Document Profile request."
+              },
+              "core_status": {
+                "type": "string",
+                "enum": ["created", "already_exists"]
+              },
+              "profile_status": {
+                "type": "string",
+                "enum": ["pending", "complete", "needs_reconciliation", "terminal_failure"]
+              },
+              "required_checks": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["core", "vat", "shipment", "main_log", "erp_log"]}
+              },
+              "completed_checks": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["core", "vat", "shipment", "main_log", "erp_log"]}
+              },
+              "reconciliation_required": {
+                "type": "boolean"
               }
             }
           }
@@ -569,7 +593,43 @@
           },
           "shelf_code_2": {
             "type": "string"
+          },
+          "qty_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
+          },
+          "price_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
+          },
+          "price_exclude_vat_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
+          },
+          "discount_amount_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
+          },
+          "sum_amount_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
+          },
+          "vat_amount_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
+          },
+          "sum_amount_exclude_vat_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
           }
+        }
+      },
+      "DocumentProfileDecimal": {
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]{0,15})(\\.[0-9]{1,6})?$",
+        "example": "300.00",
+        "description": "Profile V1 authority value. Base-10 only; no sign, comma, or exponent; at most 6 fractional digits."
+      },
+      "DocumentProfileShipment": {
+        "type": "object",
+        "required": ["transport_name", "transport_address", "transport_telephone"],
+        "properties": {
+          "transport_name": {"type": "string", "minLength": 1, "maxLength": 255},
+          "transport_address": {"type": "string", "minLength": 1, "maxLength": 1000},
+          "transport_telephone": {"type": "string", "minLength": 1, "maxLength": 100}
         }
       },
       "ERPMasterItem": {
@@ -1239,7 +1299,27 @@
           "cust_code",
           "details"
         ],
+        "maxProperties": 100,
         "properties": {
+          "document_profile_version": {
+            "type": "string",
+            "enum": ["sml-document-v1"],
+            "description": "Opt in to Profile V1. Omit this field to preserve legacy behavior."
+          },
+          "marketplace_physical_goods": {
+            "type": "boolean",
+            "description": "When true, a complete shipment is required before any SML core write."
+          },
+          "shipment_applicability": {
+            "type": "string",
+            "enum": ["required", "not_applicable"]
+          },
+          "shipment": {"$ref": "#/components/schemas/DocumentProfileShipment"},
+          "creator_code": {"type": "string", "enum": ["BILLFLOW"]},
+          "cashier_code": {"type": "string", "enum": ["BILLFLOW"]},
+          "user_request": {"type": "string", "enum": ["NEXFLOW"]},
+          "currency_code": {"type": "string", "enum": ["THB"]},
+          "exchange_rate_decimal": {"type": "string", "enum": ["1"]},
           "doc_no": {
             "type": "string"
           },
@@ -1265,14 +1345,23 @@
             "default": 7
           },
           "remark": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 255
           },
           "remark_2": {
             "type": "string",
-            "description": "สถานะเอกสารระดับหัวเอกสาร เช่น tax/notax/re"
+            "maxLength": 255,
+            "description": "Profile V1 free-text note. Legacy callers may continue sending their existing value."
+          },
+          "remark_5": {
+            "type": "string",
+            "maxLength": 255,
+            "pattern": "^NEXFLOW\\|",
+            "description": "Required Profile V1 provenance marker: NEXFLOW|<channel>|<order-or-bill>."
           },
           "details": {
             "type": "array",
+            "maxItems": 500,
             "items": {
               "$ref": "#/components/schemas/DocItem"
             },
@@ -1309,6 +1398,36 @@
           },
           "total_amount": {
             "type": "number"
+          },
+          "vat_rate_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_value_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_discount_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_before_vat_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_vat_value_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_except_vat_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_after_vat_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_amount_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"}
+        }
+      },
+      "DocumentProfileCapabilitiesResponse": {
+        "type": "object",
+        "required": ["success", "data"],
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "object",
+            "required": ["capability", "versions", "max_request_bytes", "max_items", "max_text_characters", "profile_statuses"],
+            "properties": {
+              "capability": {"type": "string", "enum": ["sml_document_profile"]},
+              "versions": {"type": "array", "items": {"type": "string", "enum": ["sml-document-v1"]}},
+              "max_request_bytes": {"type": "integer", "enum": [2097152]},
+              "max_items": {"type": "integer", "enum": [500]},
+              "max_text_characters": {"type": "integer", "enum": [255]},
+              "profile_statuses": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["pending", "complete", "needs_reconciliation", "terminal_failure"]}
+              }
+            }
           }
         }
       },
@@ -3817,6 +3936,22 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/document-profile-capabilities": {
+      "get": {
+        "tags": ["Documents"],
+        "summary": "Read opt-in SML Document Profile capabilities and hard request limits",
+        "responses": {
+          "200": {
+            "description": "capability available",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/DocumentProfileCapabilitiesResponse"}
               }
             }
           }
