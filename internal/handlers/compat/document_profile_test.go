@@ -272,16 +272,26 @@ func TestProfileRelationsWriteVATShipmentAndMainLogInCallerTransaction(t *testin
 		}
 	}
 	vatCall := tx.execCalls[0]
-	if len(vatCall.args) != 11 {
-		t.Fatalf("VAT profile args=%d, want 11 so doc_no and vat_number use independent PostgreSQL parameters", len(vatCall.args))
+	if len(vatCall.args) != 14 {
+		t.Fatalf("VAT profile args=%d, want 14 so INSERT and NOT EXISTS use independent PostgreSQL parameters", len(vatCall.args))
 	}
 	if vatCall.args[1] != p.DocNo || vatCall.args[2] != p.DocNo {
 		t.Fatalf("VAT doc identity args=%#v, want independent doc_no/vat_number values", vatCall.args[:3])
 	}
-	if strings.Contains(vatCall.sql, "doc_no,line_number,vat_number") && strings.Contains(vatCall.sql, "SELECT $1,$2,0,$2") {
-		t.Fatal("VAT profile must not reuse one PostgreSQL parameter across doc_no and vat_number column types")
+	if !strings.Contains(vatCall.sql, "SELECT $1,$2,0,$3,$4,$5,$6,$7,$8,$9,$10,1,$11,$12") ||
+		!strings.Contains(vatCall.sql, "doc_no=$13 AND trans_flag=$14") {
+		t.Fatal("VAT profile must use independent PostgreSQL parameters for every INSERT and NOT EXISTS context")
 	}
-	if !strings.Contains(tx.execCalls[2].args[1].(string), hash) {
+	shipmentCall := tx.execCalls[1]
+	if len(shipmentCall.args) != 11 || !strings.Contains(shipmentCall.sql, "doc_no=$10 AND trans_flag=$11") {
+		t.Fatalf("shipment profile must separate INSERT and NOT EXISTS parameters: args=%d sql=%s", len(shipmentCall.args), shipmentCall.sql)
+	}
+	mainLogCall := tx.execCalls[2]
+	if len(mainLogCall.args) != 11 || !strings.Contains(mainLogCall.sql, "doc_no=$9 AND screen_code=$10") ||
+		!strings.Contains(mainLogCall.sql, "data2=$11") {
+		t.Fatalf("main log profile must separate INSERT and NOT EXISTS parameters: args=%d sql=%s", len(mainLogCall.args), mainLogCall.sql)
+	}
+	if !strings.Contains(mainLogCall.args[1].(string), hash) {
 		t.Fatal("main log must durably store canonical payload hash")
 	}
 }

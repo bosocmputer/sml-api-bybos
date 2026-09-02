@@ -323,13 +323,14 @@ func writeProfileRelations(ctx context.Context, tx pgx.Tx, p docPayload, route d
 		tag, err := tx.Exec(ctx, `INSERT INTO gl_journal_vat_sale (
 			doc_date,doc_no,line_number,vat_number,base_caltax_amount,tax_rate,amount,
 			vat_date,trans_type,trans_flag,ar_code,vat_calc,branch_code,vat_type
-		) SELECT $1,$2,0,$3,$4,$5,$6,$1,$7,$8,$9,1,$10,$11
+		) SELECT $1,$2,0,$3,$4,$5,$6,$7,$8,$9,$10,1,$11,$12
 		WHERE NOT EXISTS (
 			SELECT 1 FROM gl_journal_vat_sale
-			 WHERE doc_no=$2 AND trans_flag=$8 AND line_number=0
+			 WHERE doc_no=$13 AND trans_flag=$14 AND line_number=0
 		)`,
-			docDate, p.DocNo, p.DocNo, p.TotalBeforeVATDecimal, p.VATRateDecimal, p.TotalVATValueDecimal,
-			route.transType, route.transFlag, p.CustCode, p.BranchCode, p.VATType)
+			docDate, p.DocNo, p.DocNo, p.TotalBeforeVATDecimal, p.VATRateDecimal,
+			p.TotalVATValueDecimal, docDate, route.transType, route.transFlag, p.CustCode,
+			p.BranchCode, p.VATType, p.DocNo, route.transFlag)
 		if err != nil {
 			return rows, fmt.Errorf("insert VAT profile: %w", err)
 		}
@@ -341,10 +342,11 @@ func writeProfileRelations(ctx context.Context, tx pgx.Tx, p docPayload, route d
 			remark,remark_2
 		) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9
 		WHERE NOT EXISTS (
-			SELECT 1 FROM ic_trans_shipment WHERE doc_no=$1 AND trans_flag=$3
+			SELECT 1 FROM ic_trans_shipment WHERE doc_no=$10 AND trans_flag=$11
 		)`,
 			p.DocNo, docDate, route.transFlag, p.CustCode, p.Shipment.TransportName,
-			p.Shipment.TransportAddress, p.Shipment.TransportTelephone, p.Remark, p.Remark2)
+			p.Shipment.TransportAddress, p.Shipment.TransportTelephone, p.Remark, p.Remark2,
+			p.DocNo, route.transFlag)
 		if err != nil {
 			return rows, fmt.Errorf("insert shipment profile: %w", err)
 		}
@@ -363,16 +365,17 @@ func writeProfileRelations(ctx context.Context, tx pgx.Tx, p docPayload, route d
 		}
 	}
 	docQty = qty.FloatString(6)
+	profileMarker := "NEXFLOW_PROFILE_V1:" + payloadHash
 	tag, err := tx.Exec(ctx, `INSERT INTO logs (
 		function_code,data1,data2,user_code,date_time,screen_code,guid,doc_date,doc_no,
 		doc_amount,function_type,computer_name,menu_name,doc_qty
 	) SELECT 1,$1,$2,'BILLFLOW',NOW(),$3,$4,$5,$6,$7,2,'NEXFLOW','menu_so_invoice',$8
 	WHERE NOT EXISTS (
-		SELECT 1 FROM logs WHERE doc_no=$6 AND screen_code=$3
-		  AND data2=$2 AND function_code=1
+		SELECT 1 FROM logs WHERE doc_no=$9 AND screen_code=$10
+		  AND data2=$11 AND function_code=1
 	)`,
-		buildMainLogData1(p), "NEXFLOW_PROFILE_V1:"+payloadHash, route.transFlag, guid,
-		p.DocDate, p.DocNo, p.TotalAmountDecimal, docQty)
+		buildMainLogData1(p), profileMarker, route.transFlag, guid, p.DocDate, p.DocNo,
+		p.TotalAmountDecimal, docQty, p.DocNo, route.transFlag, profileMarker)
 	if err != nil {
 		return rows, fmt.Errorf("insert main SML log profile: %w", err)
 	}
