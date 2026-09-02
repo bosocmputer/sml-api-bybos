@@ -323,12 +323,12 @@ func writeProfileRelations(ctx context.Context, tx pgx.Tx, p docPayload, route d
 		tag, err := tx.Exec(ctx, `INSERT INTO gl_journal_vat_sale (
 			doc_date,doc_no,line_number,vat_number,base_caltax_amount,tax_rate,amount,
 			vat_date,trans_type,trans_flag,ar_code,vat_calc,branch_code,vat_type
-		) SELECT $1,$2,0,$2,$3,$4,$5,$1,$6,$7,$8,1,$9,$10
+		) SELECT $1,$2,0,$3,$4,$5,$6,$1,$7,$8,$9,1,$10,$11
 		WHERE NOT EXISTS (
 			SELECT 1 FROM gl_journal_vat_sale
-			 WHERE doc_no=$2 AND trans_flag=$7 AND line_number=0
+			 WHERE doc_no=$2 AND trans_flag=$8 AND line_number=0
 		)`,
-			docDate, p.DocNo, p.TotalBeforeVATDecimal, p.VATRateDecimal, p.TotalVATValueDecimal,
+			docDate, p.DocNo, p.DocNo, p.TotalBeforeVATDecimal, p.VATRateDecimal, p.TotalVATValueDecimal,
 			route.transType, route.transFlag, p.CustCode, p.BranchCode, p.VATType)
 		if err != nil {
 			return rows, fmt.Errorf("insert VAT profile: %w", err)

@@ -271,6 +271,16 @@ func TestProfileRelationsWriteVATShipmentAndMainLogInCallerTransaction(t *testin
 			t.Fatalf("transactional profile SQL missing %s", relation)
 		}
 	}
+	vatCall := tx.execCalls[0]
+	if len(vatCall.args) != 11 {
+		t.Fatalf("VAT profile args=%d, want 11 so doc_no and vat_number use independent PostgreSQL parameters", len(vatCall.args))
+	}
+	if vatCall.args[1] != p.DocNo || vatCall.args[2] != p.DocNo {
+		t.Fatalf("VAT doc identity args=%#v, want independent doc_no/vat_number values", vatCall.args[:3])
+	}
+	if strings.Contains(vatCall.sql, "doc_no,line_number,vat_number") && strings.Contains(vatCall.sql, "SELECT $1,$2,0,$2") {
+		t.Fatal("VAT profile must not reuse one PostgreSQL parameter across doc_no and vat_number column types")
+	}
 	if !strings.Contains(tx.execCalls[2].args[1].(string), hash) {
 		t.Fatal("main log must durably store canonical payload hash")
 	}
