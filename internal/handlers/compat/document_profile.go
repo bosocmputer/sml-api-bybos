@@ -163,7 +163,80 @@ func normalizeAndValidateProfile(p *docPayload, items []docItem, route docRoute)
 	if err := requireDetailTotal(p.TotalValueDecimal, items); err != nil {
 		return err
 	}
+	if err := validateProfileVATTotals(*p, items, route); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateProfileVATTotals(p docPayload, items []docItem, route docRoute) error {
+	if route.name != routeSaleInvoice.name {
+		return nil
+	}
+	value, _ := new(big.Rat).SetString(p.TotalValueDecimal)
+	discount, _ := new(big.Rat).SetString(p.TotalDiscountDecimal)
+	net := new(big.Rat).Sub(value, discount)
+	if net.Sign() < 0 {
+		return fmt.Errorf("total_discount_decimal must not exceed total_value_decimal")
+	}
+	rate, _ := new(big.Rat).SetString(p.VATRateDecimal)
+	expectedBefore := new(big.Rat)
+	expectedVAT := new(big.Rat)
+	expectedAfter := new(big.Rat)
+	expectedAmount := new(big.Rat)
+	switch p.VATType {
+	case 0:
+		expectedBefore.Set(net)
+		expectedVAT = roundMoneyRat(new(big.Rat).Quo(new(big.Rat).Mul(net, rate), big.NewRat(100, 1)))
+		expectedAfter.Add(net, expectedVAT)
+		expectedAmount.Set(expectedAfter)
+	case 1:
+		divisor := new(big.Rat).Add(big.NewRat(1, 1), new(big.Rat).Quo(rate, big.NewRat(100, 1)))
+		expectedBefore = roundMoneyRat(new(big.Rat).Quo(net, divisor))
+		expectedVAT.Sub(net, expectedBefore)
+		expectedAfter.Set(net)
+		expectedAmount.Set(net)
+	case 2:
+		expectedAmount.Set(net)
+		for i, item := range items {
+			itemVAT, _ := new(big.Rat).SetString(item.VATAmountDecimal)
+			if itemVAT.Sign() != 0 {
+				return fmt.Errorf("vat_type 2 item %d vat_amount_decimal must be zero", i)
+			}
+		}
+	}
+	checks := []struct {
+		name     string
+		actual   string
+		expected *big.Rat
+	}{
+		{"total_before_vat_decimal", p.TotalBeforeVATDecimal, expectedBefore},
+		{"total_vat_value_decimal", p.TotalVATValueDecimal, expectedVAT},
+		{"total_after_vat_decimal", p.TotalAfterVATDecimal, expectedAfter},
+		{"total_amount_decimal", p.TotalAmountDecimal, expectedAmount},
+		{"total_except_vat_decimal", p.TotalExceptVATDecimal, new(big.Rat)},
+	}
+	for _, check := range checks {
+		actual, _ := new(big.Rat).SetString(check.actual)
+		diff := new(big.Rat).Sub(actual, check.expected)
+		if diff.Sign() < 0 {
+			diff.Neg(diff)
+		}
+		if diff.Cmp(big.NewRat(1, 100)) > 0 {
+			return fmt.Errorf("vat_type %d %s does not match the SML VAT contract", p.VATType, check.name)
+		}
+	}
+	return nil
+}
+
+func roundMoneyRat(value *big.Rat) *big.Rat {
+	scaled := new(big.Rat).Mul(value, big.NewRat(100, 1))
+	quotient := new(big.Int).Quo(scaled.Num(), scaled.Denom())
+	remainder := new(big.Int).Rem(scaled.Num(), scaled.Denom())
+	if new(big.Int).Mul(remainder, big.NewInt(2)).Cmp(scaled.Denom()) >= 0 {
+		quotient.Add(quotient, big.NewInt(1))
+	}
+	return new(big.Rat).SetFrac(quotient, big.NewInt(100))
 }
 
 func normalizeExactDecimal(field, raw string, positive bool) (string, float64, error) {
@@ -325,7 +398,7 @@ func canonicalProfileHash(tenant string, p docPayload, items []docItem, route do
 func writeProfileRelations(ctx context.Context, tx pgx.Tx, p docPayload, route docRoute, payloadHash string) (int, error) {
 	rows := 0
 	docDate, _ := time.Parse("2006-01-02", p.DocDate)
-	if p.VATRate > 0 && (p.VATType == 1 || p.VATType == 2) {
+	if saleVATRegisterApplicable(p, route) {
 		vatEffectivePeriod, vatEffectiveYear := smlVATEffectivePeriod(docDate)
 		tag, err := tx.Exec(ctx, `INSERT INTO gl_journal_vat_sale (
 			doc_date,doc_no,line_number,vat_number,base_caltax_amount,tax_rate,amount,
@@ -389,6 +462,10 @@ func writeProfileRelations(ctx context.Context, tx pgx.Tx, p docPayload, route d
 		return rows, fmt.Errorf("insert main SML log profile: %w", err)
 	}
 	return rows + int(tag.RowsAffected()), nil
+}
+
+func saleVATRegisterApplicable(p docPayload, route docRoute) bool {
+	return p.DocumentProfileVersion == documentProfileV1 && route.name == routeSaleInvoice.name && p.VATType >= 0 && p.VATType <= 2
 }
 
 func storedProfileHash(ctx context.Context, tx pgx.Tx, docNo string, transFlag int) (string, error) {
@@ -506,7 +583,7 @@ func buildERPLogDataNew(p docPayload) ([]byte, error) {
 		shipment["transport_telephone"] = p.Shipment.TransportTelephone
 	}
 	vatRows := []map[string]any{}
-	if p.VATRate > 0 && (p.VATType == 1 || p.VATType == 2) {
+	if saleVATRegisterApplicable(p, routeSaleInvoice) {
 		vatRows = append(vatRows, map[string]any{
 			"amount": p.TotalVATValueDecimal, "ar_name": "", "base_caltax_amount": p.TotalBeforeVATDecimal,
 			"branch_code": p.BranchCode, "branch_type": 0, "description": "", "except_tax_amount": "0",

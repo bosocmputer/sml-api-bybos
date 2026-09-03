@@ -569,7 +569,7 @@ func documentWriteResponse(p docPayload, existing bool, rows int, logResult erpL
 	response["payload_hash"] = p.ProfilePayloadHash
 	response["core_status"] = status
 	required := []string{"core"}
-	if p.VATRate > 0 && (p.VATType == 1 || p.VATType == 2) {
+	if saleVATRegisterApplicable(p, routeSaleInvoice) {
 		required = append(required, "vat")
 	}
 	if p.ShipmentApplicability == "required" {
@@ -578,7 +578,7 @@ func documentWriteResponse(p docPayload, existing bool, rows int, logResult erpL
 	required = append(required, "main_log", "erp_log")
 	completed := []string{"core"}
 	profileStatus := "needs_reconciliation"
-	if p.VATRate > 0 && (p.VATType == 1 || p.VATType == 2) {
+	if saleVATRegisterApplicable(p, routeSaleInvoice) {
 		completed = append(completed, "vat")
 	}
 	if p.ShipmentApplicability == "required" {
@@ -1178,15 +1178,20 @@ func prepareDocumentItems(p docPayload, items []docItem, route docRoute, product
 			})
 		}
 		expectedBeforeVAT, expectedVAT, expectedAfterVAT := expectedDiscountedHeaderCents(parentTotal-headerDiscount, p.VATType, p.VATRate)
+		expectedTotalAmount := expectedAfterVAT
+		if p.DocumentProfileVersion == documentProfileV1 && route == routeSaleInvoice && p.VATType == 2 {
+			expectedBeforeVAT, expectedVAT, expectedAfterVAT = 0, 0, 0
+			expectedTotalAmount = parentTotal - headerDiscount
+		}
 		if absCents(parentTotal-setproducts.MoneyToCents(p.TotalValue)) > 1 ||
 			absCents(expectedVAT-setproducts.MoneyToCents(p.TotalVATValue)) > 1 ||
 			absCents(expectedBeforeVAT-setproducts.MoneyToCents(p.TotalBeforeVAT)) > 1 ||
 			absCents(expectedAfterVAT-setproducts.MoneyToCents(p.TotalAfterVAT)) > 1 ||
-			absCents(expectedAfterVAT-setproducts.MoneyToCents(p.TotalAmount)) > 1 {
+			absCents(expectedTotalAmount-setproducts.MoneyToCents(p.TotalAmount)) > 1 {
 			return nil, newAppError(http.StatusConflict, "document_total_mismatch", "document header totals do not match marketplace parent lines", gin.H{
 				"parent_total": setproducts.CentsToMoney(parentTotal), "header_total_value": p.TotalValue,
 				"header_discount": p.TotalDiscount, "header_vat": p.TotalVATValue,
-				"expected_total_amount": setproducts.CentsToMoney(expectedAfterVAT), "header_total_amount": p.TotalAmount,
+				"expected_total_amount": setproducts.CentsToMoney(expectedTotalAmount), "header_total_amount": p.TotalAmount,
 			})
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -177,6 +178,26 @@ func TestDocumentProfileRequiresAuthenticatedTenantBeforeDatabaseAccess(t *testi
 	}
 }
 
+func TestDocumentProfileRejectsInvalidExactDecimalBeforeDatabaseAccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	payload := profilePayloadForTest()
+	payload.TotalValueDecimal = "1e2"
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("tenant", "aoy")
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/ic/sale-invoices", strings.NewReader(string(body)))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	NewWriteHandler(nil, nil).CreateSaleInvoice(ctx)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "base-10 decimal string") {
+		t.Fatalf("invalid exact decimal reached the database path: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestProfileMainLogEscapesHTMLAsLiteralData(t *testing.T) {
 	payload := profilePayloadForTest()
 	payload.Remark = `<script>alert("x")</script>`
@@ -264,6 +285,9 @@ func TestProfileCanonicalHashIsStableAndBusinessSensitive(t *testing.T) {
 	if err != nil || first != second || len(first) != 64 {
 		t.Fatalf("hashes=%q/%q err=%v", first, second, err)
 	}
+	if first != "21f38aa96983afb7ed038e3290f6b15213d241aca53ac9110d7d5270924b8897" {
+		t.Fatalf("canonical Sale Invoice hash changed: got %s", first)
+	}
 	p.Remark = "changed"
 	changed, _ := canonicalProfileHash("aoy", p, p.Details, routeSaleInvoice)
 	if changed == first {
@@ -272,6 +296,98 @@ func TestProfileCanonicalHashIsStableAndBusinessSensitive(t *testing.T) {
 	otherTenant, _ := canonicalProfileHash("demo", p, p.Details, routeSaleInvoice)
 	if otherTenant == changed {
 		t.Fatal("authenticated tenant must be part of idempotency hash")
+	}
+}
+
+func TestSaleInvoiceProfileVATRegisterCoversEverySMLVATMode(t *testing.T) {
+	tests := []struct {
+		name                            string
+		vatType                         int
+		beforeVAT, vat, afterVAT, total string
+	}{
+		{name: "external", vatType: 0, beforeVAT: "300.00", vat: "21.00", afterVAT: "321.00", total: "321.00"},
+		{name: "included", vatType: 1, beforeVAT: "280.37", vat: "19.63", afterVAT: "300.00", total: "300.00"},
+		{name: "zero_rate", vatType: 2, beforeVAT: "0.00", vat: "0.00", afterVAT: "0.00", total: "300.00"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := profilePayloadForTest()
+			p.VATType = tt.vatType
+			p.VATRate = 7
+			p.VATRateDecimal = "7.00"
+			p.TotalValue, p.TotalValueDecimal = 300, "300.00"
+			p.TotalBeforeVAT, _ = strconv.ParseFloat(tt.beforeVAT, 64)
+			p.TotalBeforeVATDecimal = tt.beforeVAT
+			p.TotalVATValue, _ = strconv.ParseFloat(tt.vat, 64)
+			p.TotalVATValueDecimal = tt.vat
+			p.TotalAfterVAT, _ = strconv.ParseFloat(tt.afterVAT, 64)
+			p.TotalAfterVATDecimal = tt.afterVAT
+			p.TotalAmount, _ = strconv.ParseFloat(tt.total, 64)
+			p.TotalAmountDecimal = tt.total
+			p.Details[0].Price, p.Details[0].SumAmount = 300, 300
+			p.Details[0].PriceDecimal, p.Details[0].SumAmountDecimal = "300.00", "300.00"
+			p.Details[0].PriceExcludeVAT, p.Details[0].SumAmountExclVAT = p.TotalBeforeVAT, p.TotalBeforeVAT
+			if tt.vatType == 2 {
+				p.Details[0].PriceExcludeVAT, p.Details[0].SumAmountExclVAT = 300, 300
+			}
+			p.Details[0].PriceExcludeVATDecimal = strconv.FormatFloat(p.Details[0].PriceExcludeVAT, 'f', 2, 64)
+			p.Details[0].SumAmountExclVATDecimal = strconv.FormatFloat(p.Details[0].SumAmountExclVAT, 'f', 2, 64)
+			p.Details[0].VATAmount, p.Details[0].TotalVATValue = p.TotalVATValue, p.TotalVATValue
+			p.Details[0].VATAmountDecimal = tt.vat
+
+			if err := normalizeAndValidate(&p, p.Details, routeSaleInvoice); err != nil {
+				t.Fatal(err)
+			}
+			tx := &docRefFakeTx{}
+			if _, err := writeProfileRelations(context.Background(), tx, p, routeSaleInvoice, strings.Repeat("a", 64)); err != nil {
+				t.Fatal(err)
+			}
+			if len(tx.execCalls) != 2 || !strings.Contains(tx.execCalls[0].sql, "gl_journal_vat_sale") {
+				t.Fatalf("VAT mode %d must write one VAT register and one main log; calls=%d", tt.vatType, len(tx.execCalls))
+			}
+			expectedBeforeVAT, _, _ := normalizeExactDecimal("test", tt.beforeVAT, false)
+			expectedVAT, _, _ := normalizeExactDecimal("test", tt.vat, false)
+			if fmt.Sprint(tx.execCalls[0].args[3]) != expectedBeforeVAT || fmt.Sprint(tx.execCalls[0].args[5]) != expectedVAT {
+				t.Fatalf("VAT register base/amount args=%#v, want %s/%s", tx.execCalls[0].args[3:6], tt.beforeVAT, tt.vat)
+			}
+
+			body, err := buildERPLogDataNew(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var data map[string]json.RawMessage
+			if err := json.Unmarshal(body, &data); err != nil {
+				t.Fatal(err)
+			}
+			var vatRows []map[string]any
+			if err := json.Unmarshal(data["screenvatsale"], &vatRows); err != nil {
+				t.Fatal(err)
+			}
+			if len(vatRows) != 1 || vatRows[0]["base_caltax_amount"] != expectedBeforeVAT || vatRows[0]["amount"] != expectedVAT {
+				t.Fatalf("screenvatsale=%+v", vatRows)
+			}
+			response := documentWriteResponse(p, false, 1, erpLogResult{Status: "created"})
+			if !testContainsString(response["required_checks"].([]string), "vat") || !testContainsString(response["completed_checks"].([]string), "vat") {
+				t.Fatalf("response VAT checks missing: %+v", response)
+			}
+		})
+	}
+}
+
+func testContainsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSaleInvoiceProfileRejectsVATTotalsThatDoNotMatchMode(t *testing.T) {
+	p := profilePayloadForTest()
+	p.VATType = 2
+	if err := normalizeAndValidate(&p, p.Details, routeSaleInvoice); err == nil || !strings.Contains(err.Error(), "vat_type 2") {
+		t.Fatalf("zero-rate non-zero header VAT totals must fail before core write: %v", err)
 	}
 }
 
