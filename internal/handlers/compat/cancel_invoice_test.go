@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -72,6 +73,37 @@ func TestCancellationSourceLockIsSharedAndBounded(t *testing.T) {
 	}
 }
 
+func TestCancellationProfileNeverAdoptsManualSMLDocument(t *testing.T) {
+	err := validateExistingCancellationProfileOwnership("", strings.Repeat("a", 64), "INV-1", "CN-1")
+	var appErr *appError
+	if !errors.As(err, &appErr) || appErr.Code != "source_already_cancelled_externally" || appErr.Status != 409 {
+		t.Fatalf("manual ownership error=%#v", err)
+	}
+	if err := validateExistingCancellationProfileOwnership(strings.Repeat("a", 64), strings.Repeat("a", 64), "INV-1", "CN-1"); err != nil {
+		t.Fatalf("matching owned profile rejected: %v", err)
+	}
+	err = conflictingCancellationError("INV-1", "SIC-1", models.TransFlagSaleInvoiceCancel)
+	if !errors.As(err, &appErr) || appErr.Code != "source_already_cancelled" {
+		t.Fatalf("cross-kind error=%#v", err)
+	}
+}
+
+func TestCancellationDateValidationPreservesLegacyCompatibility(t *testing.T) {
+	legacy := saleInvoiceCancelRequest{DocNo: "CN-LEGACY", DocDate: "legacy-invalid-date"}
+	if err := normalizeCancellationProfileRequest(&legacy, true); err != nil {
+		t.Fatalf("legacy request must retain date fallback behavior: %v", err)
+	}
+	profile := saleInvoiceCancelRequest{
+		DocumentProfileVersion: documentProfileV1,
+		DocNo:                  "CN-PROFILE",
+		DocDate:                "invalid-profile-date",
+		Remark5:                "NEXFLOW|shopee_realtime|ORDER-1",
+	}
+	if err := normalizeCancellationProfileRequest(&profile, true); err == nil || !strings.Contains(err.Error(), "doc_date format") {
+		t.Fatalf("Profile V1 must reject an ambiguous document date: %v", err)
+	}
+}
+
 func TestSaleOrderCancelProfileMatchesFrozenParity(t *testing.T) {
 	src := saleOrderForCancelFixture()
 	req := saleInvoiceCancelRequest{
@@ -114,6 +146,131 @@ func TestSaleOrderCancelProfileMatchesFrozenParity(t *testing.T) {
 			t.Fatalf("main log missing %q: %s", want, encoded)
 		}
 	}
+}
+
+func TestSaleInvoiceVoidProfileIsHeaderOnlyAndMatchesFrozenAuditShape(t *testing.T) {
+	src := saleInvoiceForCancelFixture(1)
+	req := profileCancellationRequest("BF-SIC26090001", "SIC")
+	p, err := saleInvoiceCancellationProfilePayload("aoy", src, req, routeSaleInvoiceCancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Details) != 0 || p.TotalAmountDecimal != "0" || p.DocRef != src.DocNo {
+		t.Fatalf("SIC profile=%+v", p)
+	}
+	tx := &docRefFakeTx{}
+	if _, err := writeProfileRelations(context.Background(), tx, p, routeSaleInvoiceCancel, p.ProfilePayloadHash); err != nil {
+		t.Fatal(err)
+	}
+	if len(tx.execCalls) != 1 || !strings.Contains(tx.execCalls[0].sql, "INSERT INTO logs") || testCallsContainSQL(tx.execCalls, "gl_journal") || testCallsContainSQL(tx.execCalls, "ap_ar") {
+		t.Fatalf("SIC relation writes=%+v", tx.execCalls)
+	}
+	if !testArgsContain(tx.execCalls[0].args, "menu_so_invoice_cancel") {
+		t.Fatalf("SIC main-log menu missing: %#v", tx.execCalls[0].args)
+	}
+	body, err := buildERPLogDataNew(p, routeSaleInvoiceCancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertERPSections(t, body, []string{"screenbottom", "screendetail", "screenmore", "screentop"})
+}
+
+func TestCreditNoteProfileMatchesVATReceivableAndExactSourceReferences(t *testing.T) {
+	for _, vatType := range []int{0, 1, 2} {
+		t.Run(fmt.Sprintf("vat_type_%d", vatType), func(t *testing.T) {
+			src := saleInvoiceForCancelFixture(vatType)
+			req := profileCancellationRequest(fmt.Sprintf("BF-CN-%d", vatType), "CN")
+			p, err := saleInvoiceCancellationProfilePayload("aoy", src, req, routeCreditNote)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(p.Details) != 1 || p.Details[0].RefDocNo != src.DocNo || p.Details[0].BranchCode != "" || p.Details[0].DocRefType != 1 {
+				t.Fatalf("CN references=%+v", p.Details)
+			}
+			refAmount, receivableAmount := creditNoteReferenceAmounts(src)
+			if refAmount != src.TotalValueDecimal || receivableAmount != src.TotalAmountDecimal {
+				t.Fatalf("reference authority=%s/%s source=%+v", refAmount, receivableAmount, src)
+			}
+			tx := &docRefFakeTx{}
+			if _, err := writeProfileRelations(context.Background(), tx, p, routeCreditNote, p.ProfilePayloadHash); err != nil {
+				t.Fatal(err)
+			}
+			if len(tx.execCalls) != 3 || !strings.Contains(tx.execCalls[0].sql, "gl_journal_vat_sale") ||
+				!strings.Contains(tx.execCalls[1].sql, "ap_ar_trans_detail") || !strings.Contains(tx.execCalls[2].sql, "INSERT INTO logs") {
+				t.Fatalf("CN relation writes=%+v", tx.execCalls)
+			}
+			body, err := buildERPLogDataNew(p, routeCreditNote)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertERPSections(t, body, []string{"screenbottom", "screendetail", "screengldetail", "screengltop", "screenmore", "screenpay", "screentop", "screenvatsale", "screenwithholdingtax"})
+			var sections map[string]json.RawMessage
+			_ = json.Unmarshal(body, &sections)
+			var details []map[string]any
+			_ = json.Unmarshal(sections["screendetail"], &details)
+			if len(details) != 1 || details[0]["ref_doc_no"] != src.DocNo || details[0]["branch_code"] != "" {
+				t.Fatalf("CN ERP detail=%+v", details)
+			}
+		})
+	}
+}
+
+func profileCancellationRequest(docNo, format string) saleInvoiceCancelRequest {
+	return saleInvoiceCancelRequest{
+		DocumentProfileVersion: documentProfileV1, DocNo: docNo, DocDate: "2026-09-03", DocTime: "11:25",
+		DocFormatCode: format, Remark: "Synthetic cancellation", Remark2: "full reversal",
+		Remark5: "NEXFLOW|shopee_realtime|ORDER-1", CreatorCode: "BILLFLOW", CashierCode: "BILLFLOW", UserRequest: "NEXFLOW",
+	}
+}
+
+func saleInvoiceForCancelFixture(vatType int) saleInvoiceForCancel {
+	before, vat, after, total := "280.37", "19.63", "300", "300"
+	if vatType == 0 {
+		before, vat, after, total = "300", "21", "321", "321"
+	}
+	if vatType == 2 {
+		before, vat, after, total = "0", "0", "0", "300"
+	}
+	detailBefore := before
+	if vatType == 2 {
+		detailBefore = "300"
+	}
+	return saleInvoiceForCancel{
+		DocNo: "INV-SYNTHETIC", DocDate: time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC), DocTime: "11:24",
+		DocFormatCode: "INV", CustCode: "AR-1", BranchCode: "", WHFrom: "AB-1", LocationFrom: "001",
+		VATType: vatType, VATRate: 7, VATRateDecimal: "7", TotalValue: 300, TotalValueDecimal: "300",
+		TotalBeforeVATDecimal: before, TotalVATValueDecimal: vat, TotalAfterVATDecimal: after,
+		TotalAmountDecimal: total, TotalDiscountDecimal: "0", TotalExceptVATDecimal: "0",
+		Items: []saleInvoiceCancelLine{{LineNumber: 0, ItemCode: "AH-0001", ItemName: "Synthetic item", UnitCode: "ชิ้น",
+			WHCode: "AB-1", ShelfCode: "001", BranchCode: "", Qty: 1, QtyDecimal: "1", Price: 300,
+			PriceDecimal: "300", PriceExcludeVATDecimal: detailBefore, DiscountAmountDecimal: "0",
+			TotalVATValueDecimal: vat, SumAmountDecimal: "300", SumAmountExclVATDecimal: detailBefore,
+			TaxType: 1, VATType: vatType}},
+	}
+}
+
+func assertERPSections(t *testing.T, body []byte, want []string) {
+	t.Helper()
+	var sections map[string]json.RawMessage
+	if err := json.Unmarshal(body, &sections); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(sections))
+	for key := range sections {
+		got = append(got, key)
+	}
+	if !sameSortedStrings(got, want) {
+		t.Fatalf("ERP sections=%v want=%v", got, want)
+	}
+}
+
+func testCallsContainSQL(calls []docRefExecCall, fragment string) bool {
+	for _, call := range calls {
+		if strings.Contains(call.sql, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func sameSortedStrings(got, want []string) bool {

@@ -581,6 +581,9 @@ func documentWriteResponse(p docPayload, route docRoute, existing bool, rows int
 	if saleVATRegisterApplicable(p, route) {
 		required = append(required, "vat")
 	}
+	if route.name == routeCreditNote.name {
+		required = append(required, "ap_ar")
+	}
 	if p.ShipmentApplicability == "required" {
 		required = append(required, "shipment")
 	}
@@ -589,6 +592,9 @@ func documentWriteResponse(p docPayload, route docRoute, existing bool, rows int
 	profileStatus := "needs_reconciliation"
 	if saleVATRegisterApplicable(p, route) {
 		completed = append(completed, "vat")
+	}
+	if route.name == routeCreditNote.name {
+		completed = append(completed, "ap_ar")
 	}
 	if p.ShipmentApplicability == "required" {
 		completed = append(completed, "shipment")
@@ -731,7 +737,7 @@ func insertERPLog(ctx context.Context, pool erpLogPool, p docPayload, route docR
 				$11,$12
 			)`,
 			p.DocNo, docDate, p.DocTime, p.CustCode, "BILLFLOW",
-			route.transFlag, route.transType, "NEXFLOW", 1, route.menuName,
+			route.transFlag, route.transType, "NEXFLOW", 1, profileERPLogMenu(route),
 			p.TotalAmountDecimal, dataNew,
 		)
 		if err != nil {
@@ -757,6 +763,15 @@ func insertERPLog(ctx context.Context, pool erpLogPool, p docPayload, route docR
 		return "warning", fmt.Errorf("insert erp_logs: %w", err)
 	}
 	return "created", nil
+}
+
+func profileERPLogMenu(route docRoute) string {
+	switch route.name {
+	case routeSaleOrderCancel.name, routeSaleInvoiceCancel.name, routeCreditNote.name:
+		return profileMainLogMenu(route)
+	default:
+		return route.menuName
+	}
 }
 
 func (h *WriteHandler) cachedERPLogAvailability(logDB string) (erpLogCacheEntry, bool) {
@@ -1032,7 +1047,7 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 }
 
 func profileHeaderTaxDocument(route docRoute, p docPayload, docDate time.Time) (string, any) {
-	if route.name == routeSaleInvoice.name {
+	if route.name == routeSaleInvoice.name || route.name == routeCreditNote.name {
 		return p.DocNo, docDate
 	}
 	return "", nil

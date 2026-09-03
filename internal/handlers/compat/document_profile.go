@@ -33,7 +33,8 @@ func normalizeAndValidateProfile(p *docPayload, items []docItem, route docRoute)
 	if p.DocumentProfileVersion == "" {
 		return nil
 	}
-	if route.name != routeSaleInvoice.name && route.name != routeSaleOrder.name && route.name != routeSaleOrderCancel.name {
+	if route.name != routeSaleInvoice.name && route.name != routeSaleOrder.name && route.name != routeSaleOrderCancel.name &&
+		route.name != routeSaleInvoiceCancel.name && route.name != routeCreditNote.name {
 		return fmt.Errorf("document_profile_version is not supported for route %s", route.name)
 	}
 	p.CreatorCode = strings.TrimSpace(p.CreatorCode)
@@ -170,7 +171,7 @@ func normalizeAndValidateProfile(p *docPayload, items []docItem, route docRoute)
 }
 
 func validateProfileVATTotals(p docPayload, items []docItem, route docRoute) error {
-	if route.name != routeSaleInvoice.name {
+	if route.name != routeSaleInvoice.name && route.name != routeCreditNote.name {
 		return nil
 	}
 	value, _ := new(big.Rat).SetString(p.TotalValueDecimal)
@@ -324,6 +325,10 @@ type canonicalProfileItem struct {
 	Sum             string `json:"sum"`
 	VAT             string `json:"vat"`
 	BeforeVAT       string `json:"before_vat"`
+	RefDocNo        string `json:"ref_doc_no,omitempty"`
+	RefLineNumber   int    `json:"ref_line_number,omitempty"`
+	DocRefType      int    `json:"doc_ref_type,omitempty"`
+	BranchCode      string `json:"branch_code,omitempty"`
 }
 
 func canonicalProfileHash(tenant string, p docPayload, items []docItem, route docRoute) (string, error) {
@@ -352,6 +357,8 @@ func canonicalProfileHash(tenant string, p docPayload, items []docItem, route do
 			Price: item.PriceDecimal, PriceExcludeVAT: item.PriceExcludeVATDecimal,
 			Discount: item.DiscountAmountDecimal, Sum: item.SumAmountDecimal,
 			VAT: item.VATAmountDecimal, BeforeVAT: item.SumAmountExclVATDecimal,
+			RefDocNo: item.RefDocNo, RefLineNumber: item.RefLineNumber,
+			DocRefType: item.DocRefType, BranchCode: item.BranchCode,
 		})
 	}
 	canonical := struct {
@@ -434,6 +441,25 @@ func writeProfileRelations(ctx context.Context, tx pgx.Tx, p docPayload, route d
 		}
 		rows += int(tag.RowsAffected())
 	}
+	if route.name == routeCreditNote.name {
+		refDate, err := time.Parse("2006-01-02", p.DocRefDate)
+		if err != nil {
+			return rows, fmt.Errorf("parse source date for receivable profile: %w", err)
+		}
+		tag, err := tx.Exec(ctx, `INSERT INTO ap_ar_trans_detail (
+			trans_type,trans_flag,doc_date,doc_no,line_number,billing_no,billing_date,
+			sum_debt_value,sum_debt_amount,sum_debt_balance,sum_before_vat,bill_type,last_status
+		) SELECT $1,$2,$3,$4,0,$5,$6,$7,$7,$7,$8,1,0
+		WHERE NOT EXISTS (
+			SELECT 1 FROM ap_ar_trans_detail
+			 WHERE doc_no=$9 AND trans_flag=$10 AND line_number=0 AND COALESCE(last_status,0)=0
+		)`, route.transType, route.transFlag, docDate, p.DocNo, p.DocRef, refDate,
+			p.TotalAmountDecimal, p.TotalBeforeVATDecimal, p.DocNo, route.transFlag)
+		if err != nil {
+			return rows, fmt.Errorf("insert credit-note receivable profile: %w", err)
+		}
+		rows += int(tag.RowsAffected())
+	}
 	guid, err := newProfileLogGUID()
 	if err != nil {
 		return rows, err
@@ -471,13 +497,18 @@ func profileMainLogMenu(route docRoute) string {
 		return "menu_so_sale_order"
 	case routeSaleInvoice.name:
 		return "menu_so_invoice"
+	case routeSaleInvoiceCancel.name:
+		return "menu_so_invoice_cancel"
+	case routeCreditNote.name:
+		return "menu_so_credit_note"
 	default:
 		return ""
 	}
 }
 
 func saleVATRegisterApplicable(p docPayload, route docRoute) bool {
-	return p.DocumentProfileVersion == documentProfileV1 && route.name == routeSaleInvoice.name && p.VATType >= 0 && p.VATType <= 2
+	return p.DocumentProfileVersion == documentProfileV1 &&
+		(route.name == routeSaleInvoice.name || route.name == routeCreditNote.name) && p.VATType >= 0 && p.VATType <= 2
 }
 
 func storedProfileHash(ctx context.Context, tx pgx.Tx, docNo string, transFlag int) (string, error) {
@@ -524,6 +555,30 @@ func buildMainLogData1(p docPayload, route docRoute) string {
 			`<d t=1 f=user_request>` + html.EscapeString(p.UserRequest) + `</d>` +
 			`<d t=6 f=cancel_type>2</d></top>`
 		return html.EscapeString(xml)
+	}
+	if route.name == routeSaleInvoiceCancel.name || route.name == routeCreditNote.name {
+		refDate := docDate
+		if parsed, err := time.Parse("2006-01-02", p.DocRefDate); err == nil {
+			refDate = parsed
+		}
+		thaiRefDate := fmt.Sprintf("%d/%d/%d", refDate.Day(), int(refDate.Month()), refDate.Year()+543)
+		xml := `<?xml version="1.0" encoding="utf-8"?><top>` +
+			`<d t=2 f=doc_date>` + thaiDate + `</d>` +
+			`<d t=1 f=doc_time>` + html.EscapeString(p.DocTime) + `</d>` +
+			`<d t=1 f=cust_code>` + html.EscapeString(p.CustCode) + `</d>` +
+			`<d t=2 f=doc_ref_date>` + thaiRefDate + `</d>` +
+			`<d t=1 f=doc_no>` + html.EscapeString(p.DocNo) + `</d>` +
+			`<d t=1 f=doc_format_code>` + html.EscapeString(p.DocFormatCode) + `</d>` +
+			`<d t=1 f=doc_ref>` + html.EscapeString(p.DocRef) + `</d>` +
+			`<d t=1 f=user_approve>` + html.EscapeString(p.CreatorCode) + `</d>` +
+			`<d t=1 f=user_request>` + html.EscapeString(p.UserRequest) + `</d>`
+		if route.name == routeCreditNote.name {
+			xml += `<d t=2 f=tax_doc_date>` + thaiDate + `</d>` +
+				`<d t=1 f=tax_doc_no>` + html.EscapeString(p.DocNo) + `</d>` +
+				`<d t=5 f=inquiry_type>` + strconv.Itoa(p.InquiryType) + `</d>` +
+				`<d t=5 f=vat_type>` + strconv.Itoa(p.VATType) + `</d>`
+		}
+		return html.EscapeString(xml + `</top>`)
 	}
 	xml := `<?xml version="1.0" encoding="utf-8"?><top>` +
 		`<d t=2 f=doc_date>` + thaiDate + `</d>` +
@@ -699,6 +754,33 @@ func buildERPLogDataNew(p docPayload, route docRoute) ([]byte, error) {
 				"user_request": p.UserRequest, "vat_type": p.VATType,
 			},
 		}
+	}
+	if route.name == routeSaleInvoiceCancel.name {
+		data = map[string]any{
+			"screenbottom": map[string]any{
+				"remark_2": p.Remark2, "remark_3": "", "remark_4": "", "remark_5": p.Remark5,
+			},
+			"screendetail": []any{},
+			"screenmore": map[string]any{
+				"remark": p.Remark,
+			},
+			"screentop": map[string]any{
+				"cust_code": p.CustCode, "doc_date": p.DocDate, "doc_format_code": p.DocFormatCode,
+				"doc_no": p.DocNo, "doc_ref": p.DocRef, "doc_ref_date": p.DocRefDate,
+				"doc_time": p.DocTime, "user_approve": p.CreatorCode, "user_request": p.UserRequest,
+			},
+		}
+	}
+	if route.name == routeCreditNote.name {
+		for i, detail := range details {
+			detail["ref_doc_no"] = items[i].RefDocNo
+			detail["ref_row"] = items[i].RefLineNumber
+			detail["doc_ref_type"] = items[i].DocRefType
+			detail["branch_code"] = items[i].BranchCode
+		}
+		delete(data, "screenshipment")
+		delete(data, "screenpaydeposit")
+		data["screendetail"] = details
 	}
 	return json.Marshal(data)
 }

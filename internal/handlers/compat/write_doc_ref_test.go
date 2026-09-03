@@ -21,9 +21,9 @@ type docRefFakeTx struct {
 	scanRows []docRefScanRow
 	rowIdx   int
 	// execCalls captures UPDATE statements in order.
-	execCalls []docRefExecCall
-	execErr   error
-	committed bool
+	execCalls  []docRefExecCall
+	execErr    error
+	committed  bool
 	rolledBack bool
 }
 

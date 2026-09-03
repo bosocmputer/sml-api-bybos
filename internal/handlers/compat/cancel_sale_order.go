@@ -81,7 +81,7 @@ func (h *WriteHandler) handleSaleOrderVoid(c *gin.Context, previewOnly bool) {
 	}
 	if result.profilePayload != nil {
 		logResult := h.writeERPLog(c, *result.profilePayload, routeSaleOrderCancel, true)
-		applyCancellationProfileStatus(&result, logResult)
+		applyCancellationProfileStatus(&result, routeSaleOrderCancel, logResult)
 	}
 	if result.Status == "already_exists" {
 		api.OK(c, result)
@@ -115,7 +115,7 @@ func executeSaleOrderVoid(ctx context.Context, pool txBeginner, tenant, sourceDo
 	if err := acquireCancellationSourceLock(ctx, tx, models.TransFlagSaleOrder, sourceDocNo); err != nil {
 		return saleInvoiceCancelPreview{}, 0, err
 	}
-	if err := normalizeSaleOrderCancelRequest(&req, !previewOnly); err != nil {
+	if err := normalizeCancellationProfileRequest(&req, !previewOnly); err != nil {
 		return saleInvoiceCancelPreview{}, 0, newAppError(http.StatusBadRequest, "validation_failed", err.Error(), nil)
 	}
 	existing, err := existingSaleOrderVoid(ctx, tx, sourceDocNo)
@@ -147,10 +147,7 @@ func executeSaleOrderVoid(ctx context.Context, pool txBeginner, tenant, sourceDo
 			if err != nil {
 				return saleInvoiceCancelPreview{}, 0, err
 			}
-			if storedHash == "" {
-				return saleInvoiceCancelPreview{}, 0, newAppError(http.StatusConflict, "source_already_cancelled_externally", "source sale order was already cancelled outside Nexflow", gin.H{"source_doc_no": src.DocNo, "existing_cancel_doc_no": existing})
-			}
-			if err := validateStoredProfileHash(storedHash, p.ProfilePayloadHash, existing); err != nil {
+			if err := validateExistingCancellationProfileOwnership(storedHash, p.ProfilePayloadHash, src.DocNo, existing); err != nil {
 				return saleInvoiceCancelPreview{}, 0, err
 			}
 			p.DocNo = existing
@@ -204,7 +201,7 @@ func executeSaleOrderVoid(ctx context.Context, pool txBeginner, tenant, sourceDo
 	return result, rows, nil
 }
 
-func normalizeSaleOrderCancelRequest(req *saleInvoiceCancelRequest, requireDocNo bool) error {
+func normalizeCancellationProfileRequest(req *saleInvoiceCancelRequest, requireDocNo bool) error {
 	req.DocumentProfileVersion = strings.TrimSpace(req.DocumentProfileVersion)
 	req.DocNo = strings.TrimSpace(req.DocNo)
 	req.DocDate = strings.TrimSpace(req.DocDate)
@@ -214,18 +211,22 @@ func normalizeSaleOrderCancelRequest(req *saleInvoiceCancelRequest, requireDocNo
 	req.Remark2 = strings.TrimSpace(req.Remark2)
 	req.Remark5 = strings.TrimSpace(req.Remark5)
 	if requireDocNo && req.DocNo == "" {
-		return fmt.Errorf("doc_no is required for sale-order cancellation create")
+		return fmt.Errorf("doc_no is required for cancellation create")
 	}
 	if req.DocumentProfileVersion != "" && req.DocumentProfileVersion != documentProfileV1 {
 		return fmt.Errorf("document_profile_version must be %q", documentProfileV1)
+	}
+	// Preserve the legacy cancellation contract: the pre-Profile writers fall
+	// back to today's date when doc_date is missing or malformed. Profile V1 is
+	// deliberately strict because its canonical hash and audit relations must
+	// all agree on the same document date.
+	if req.DocumentProfileVersion == "" {
+		return nil
 	}
 	if req.DocDate != "" {
 		if _, err := time.Parse("2006-01-02", req.DocDate); err != nil {
 			return fmt.Errorf("doc_date format must be YYYY-MM-DD")
 		}
-	}
-	if req.DocumentProfileVersion == "" {
-		return nil
 	}
 	for _, field := range []struct{ name, value string }{{"remark", req.Remark}, {"remark_2", req.Remark2}, {"remark_5", req.Remark5}} {
 		if err := validateBoundedLiteral(field.name, field.value, maxProfileTextRunes); err != nil {
@@ -305,22 +306,27 @@ func saleOrderCancelProfilePayload(tenant string, src saleOrderForCancel, req sa
 	if err != nil {
 		return docPayload{}, err
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%s|%d|%s", strings.TrimSpace(tenant), models.TransFlagSaleOrder, src.DocNo, models.TransFlagSaleOrderCancel, baseHash)))
-	p.ProfilePayloadHash = hex.EncodeToString(sum[:])
+	p.ProfilePayloadHash = cancellationIntentProfileHash(tenant, models.TransFlagSaleOrder, src.DocNo, models.TransFlagSaleOrderCancel, baseHash)
 	return p, nil
+}
+
+func cancellationIntentProfileHash(tenant string, sourceTransFlag int, sourceDocNo string, destinationTransFlag int, baseHash string) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%s|%d|%s", strings.TrimSpace(tenant), sourceTransFlag, strings.TrimSpace(sourceDocNo), destinationTransFlag, baseHash)))
+	return hex.EncodeToString(sum[:])
 }
 
 func saleOrderCancelPreviewFromSource(src saleOrderForCancel, req saleInvoiceCancelRequest, p docPayload) saleInvoiceCancelPreview {
 	result := saleInvoiceCancelPreview{Status: "ready", Kind: saleInvoiceCancelKindSaleOrder, SaleDocNo: src.DocNo,
 		CancelDocNo: req.DocNo, TransFlag: models.TransFlagSaleOrderCancel, DocFormatCode: p.DocFormatCode,
 		DocDate: p.DocDate, CustCode: src.CustCode, SourceItemCount: len(src.Items), ItemCount: len(src.Items),
-		PayloadHash: p.ProfilePayloadHash, profilePayload: &p}
+		PayloadHash: p.ProfilePayloadHash}
 	result.TotalAmount, _ = strconv.ParseFloat(src.TotalAmount, 64)
 	result.TotalValue, _ = strconv.ParseFloat(src.TotalValue, 64)
 	result.TotalVATValue, _ = strconv.ParseFloat(src.TotalVATValue, 64)
 	result.TotalAfterVAT, _ = strconv.ParseFloat(src.TotalAfterVAT, 64)
 	result.SourceTotalAmount = result.TotalAmount
 	if p.DocumentProfileVersion == documentProfileV1 {
+		result.profilePayload = &p
 		result.CoreStatus = "pending"
 		result.ProfileStatus = "pending"
 		result.RequiredChecks = []string{"core", "main_log", "erp_log"}
@@ -339,12 +345,17 @@ func saleOrderCancelPreviewFromSource(src saleOrderForCancel, req saleInvoiceCan
 	return result
 }
 
-func applyCancellationProfileStatus(result *saleInvoiceCancelPreview, logResult erpLogResult) {
+func applyCancellationProfileStatus(result *saleInvoiceCancelPreview, route docRoute, logResult erpLogResult) {
 	if result == nil || result.profilePayload == nil || result.profilePayload.DocumentProfileVersion != documentProfileV1 {
 		return
 	}
-	result.RequiredChecks = []string{"core", "main_log", "erp_log"}
-	result.CompletedChecks = []string{"core", "main_log"}
+	result.RequiredChecks = cancellationProfileRequiredChecks(route)
+	result.CompletedChecks = make([]string, 0, len(result.RequiredChecks))
+	for _, check := range result.RequiredChecks {
+		if check != "erp_log" {
+			result.CompletedChecks = append(result.CompletedChecks, check)
+		}
+	}
 	result.LogStatus = logResult.Status
 	result.LogWarning = logResult.Warning
 	result.ProfileStatus = "needs_reconciliation"
