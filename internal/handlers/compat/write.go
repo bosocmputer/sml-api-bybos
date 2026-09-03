@@ -416,17 +416,17 @@ func (h *WriteHandler) createDocument(c *gin.Context, route docRoute) {
 		return
 	}
 	if existing && p.DocumentProfileVersion == "" {
-		api.OK(c, documentWriteResponse(p, true, rows, erpLogResult{Status: "skipped"}))
+		api.OK(c, documentWriteResponse(p, route, true, rows, erpLogResult{Status: "skipped"}))
 		h.logWrite(c, route, p.DocNo, rows, start, "already_exists")
 		return
 	}
 	logResult := h.writeERPLog(c, p, route, p.DocumentProfileVersion != "")
 	if existing {
-		api.OK(c, documentWriteResponse(p, true, rows, logResult))
+		api.OK(c, documentWriteResponse(p, route, true, rows, logResult))
 		h.logWrite(c, route, p.DocNo, rows, start, "already_exists_reconciled")
 		return
 	}
-	api.Created(c, documentWriteResponse(p, false, rows, logResult))
+	api.Created(c, documentWriteResponse(p, route, false, rows, logResult))
 	h.logWrite(c, route, p.DocNo, rows, start, "")
 }
 
@@ -435,8 +435,8 @@ func normalizeAndValidate(p *docPayload, items []docItem, route docRoute) error 
 	if p.DocumentProfileVersion != "" && p.DocumentProfileVersion != documentProfileV1 {
 		return fmt.Errorf("document_profile_version must be %q", documentProfileV1)
 	}
-	if p.DocumentProfileVersion != "" && route.name != routeSaleInvoice.name {
-		return fmt.Errorf("document_profile_version is supported only for sale invoices")
+	if p.DocumentProfileVersion != "" && route.name != routeSaleInvoice.name && route.name != routeSaleOrder.name {
+		return fmt.Errorf("document_profile_version is not supported for route %s", route.name)
 	}
 	p.DocNo = strings.TrimSpace(p.DocNo)
 	p.DocDate = strings.TrimSpace(p.DocDate)
@@ -547,7 +547,7 @@ func validateProfileText(field, value string) error {
 	return nil
 }
 
-func documentWriteResponse(p docPayload, existing bool, rows int, logResult erpLogResult) gin.H {
+func documentWriteResponse(p docPayload, route docRoute, existing bool, rows int, logResult erpLogResult) gin.H {
 	status := "created"
 	if existing {
 		status = "already_exists"
@@ -569,7 +569,7 @@ func documentWriteResponse(p docPayload, existing bool, rows int, logResult erpL
 	response["payload_hash"] = p.ProfilePayloadHash
 	response["core_status"] = status
 	required := []string{"core"}
-	if saleVATRegisterApplicable(p, routeSaleInvoice) {
+	if saleVATRegisterApplicable(p, route) {
 		required = append(required, "vat")
 	}
 	if p.ShipmentApplicability == "required" {
@@ -578,7 +578,7 @@ func documentWriteResponse(p docPayload, existing bool, rows int, logResult erpL
 	required = append(required, "main_log", "erp_log")
 	completed := []string{"core"}
 	profileStatus := "needs_reconciliation"
-	if saleVATRegisterApplicable(p, routeSaleInvoice) {
+	if saleVATRegisterApplicable(p, route) {
 		completed = append(completed, "vat")
 	}
 	if p.ShipmentApplicability == "required" {
@@ -688,7 +688,7 @@ func insertERPLog(ctx context.Context, pool erpLogPool, p docPayload, route docR
 		return "skipped", nil
 	}
 	if p.DocumentProfileVersion == documentProfileV1 {
-		dataNew, err := buildERPLogDataNew(p)
+		dataNew, err := buildERPLogDataNew(p, route)
 		if err != nil {
 			return "warning", fmt.Errorf("build erp_logs data_new: %w", err)
 		}
@@ -859,8 +859,7 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 	var taxDocDate, sendDate, creditDate any
 	var exchangeRate any = float64(0)
 	if p.DocumentProfileVersion == documentProfileV1 {
-		taxDocNo = p.DocNo
-		taxDocDate = docDate
+		taxDocNo, taxDocDate = profileHeaderTaxDocument(route, p, docDate)
 		sendDate = docDate
 		creditDate = docDate
 		currencyCode = p.CurrencyCode
@@ -951,11 +950,7 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 			isGetPrice = 1
 		}
 
-		// calc_flag: sale side = -1, purchase side = 1 (SML convention)
-		calcFlag := 1
-		if route.transType == models.TransTypeSale {
-			calcFlag = -1
-		}
+		calcFlag := documentDetailCalcFlag(route)
 
 		_, err = tx.Exec(ctx, `
 			INSERT INTO ic_trans_detail (
@@ -1023,6 +1018,13 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 	}
 	h.logSetExpansion(tenant, p.DocNo, items, products)
 	return rowsWritten, false, nil
+}
+
+func profileHeaderTaxDocument(route docRoute, p docPayload, docDate time.Time) (string, any) {
+	if route.name == routeSaleInvoice.name {
+		return p.DocNo, docDate
+	}
+	return "", nil
 }
 
 func (h *WriteHandler) logSetExpansion(tenant, docNo string, items []docItem, products map[string]setproducts.Product) {
@@ -1111,6 +1113,9 @@ func prepareDocumentItems(p docPayload, items []docItem, route docRoute, product
 		}
 		if product.ItemType != 3 {
 			prepared = append(prepared, preparedDocItem{docItem: item})
+			if len(prepared) > maxDocumentItems {
+				return nil, expandedItemLimitError(len(prepared))
+			}
 			continue
 		}
 		hasSet = true
@@ -1132,6 +1137,9 @@ func prepareDocumentItems(p docPayload, items []docItem, route docRoute, product
 			docItem: item, ItemType: 3, RefGUID: guid, SetRefPrice: round6(item.Price),
 		})
 		definition := product.Definition
+		if len(prepared)+len(definition.Components) > maxDocumentItems {
+			return nil, expandedItemLimitError(len(prepared) + len(definition.Components))
+		}
 		sumAlloc, err := setproducts.AllocateCents(setproducts.MoneyToCents(item.SumAmount), definition.Components)
 		if err != nil {
 			return nil, newAppError(http.StatusConflict, "set_allocation_invalid", "set product price weights are invalid", gin.H{"item_code": item.ItemCode})
@@ -1201,6 +1209,12 @@ func prepareDocumentItems(p docPayload, items []docItem, route docRoute, product
 	return prepared, nil
 }
 
+func expandedItemLimitError(count int) error {
+	return newAppError(http.StatusRequestEntityTooLarge, "expanded_item_limit_exceeded",
+		fmt.Sprintf("set-product expansion produced %d rows; maximum is %d", count, maxDocumentItems),
+		gin.H{"expanded_items": count, "max_expanded_items": maxDocumentItems})
+}
+
 // expectedDiscountedHeaderCents calculates header VAT from the gross parent
 // total after the document-level discount. Set children stay at gross values;
 // the discount is intentionally not distributed to detail rows.
@@ -1220,6 +1234,13 @@ func expectedDiscountedHeaderCents(netCents int64, vatType int, vatRate float64)
 		afterVAT = netCents + vat
 	}
 	return
+}
+
+func documentDetailCalcFlag(route docRoute) int {
+	if route.name == routeSaleInvoice.name {
+		return -1
+	}
+	return 1
 }
 
 func normalizeDocItem(item docItem) docItem {

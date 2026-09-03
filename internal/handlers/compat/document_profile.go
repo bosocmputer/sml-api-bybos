@@ -33,8 +33,8 @@ func normalizeAndValidateProfile(p *docPayload, items []docItem, route docRoute)
 	if p.DocumentProfileVersion == "" {
 		return nil
 	}
-	if route.name != routeSaleInvoice.name {
-		return fmt.Errorf("document_profile_version is supported only for sale invoices")
+	if route.name != routeSaleInvoice.name && route.name != routeSaleOrder.name {
+		return fmt.Errorf("document_profile_version is not supported for route %s", route.name)
 	}
 	p.CreatorCode = strings.TrimSpace(p.CreatorCode)
 	p.CashierCode = strings.TrimSpace(p.CashierCode)
@@ -440,7 +440,7 @@ func writeProfileRelations(ctx context.Context, tx pgx.Tx, p docPayload, route d
 	}
 	docQty := "0"
 	qty := new(big.Rat)
-	for _, item := range p.Details {
+	for _, item := range profileRouteItems(p, route) {
 		value, _ := new(big.Rat).SetString(item.QtyDecimal)
 		if value != nil {
 			qty.Add(qty, value)
@@ -448,20 +448,32 @@ func writeProfileRelations(ctx context.Context, tx pgx.Tx, p docPayload, route d
 	}
 	docQty = qty.FloatString(6)
 	profileMarker := "NEXFLOW_PROFILE_V1:" + payloadHash
+	menuName := profileMainLogMenu(route)
 	tag, err := tx.Exec(ctx, `INSERT INTO logs (
 		function_code,data1,data2,user_code,date_time,screen_code,guid,doc_date,doc_no,
 		doc_amount,function_type,computer_name,menu_name,doc_qty
-	) SELECT 1,$1,$2,'BILLFLOW',NOW(),$3,$4,$5,$6,$7,2,'NEXFLOW','menu_so_invoice',$8
+	) SELECT 1,$1,$2,'BILLFLOW',NOW(),$3,$4,$5,$6,$7,2,'NEXFLOW',$8,$9
 	WHERE NOT EXISTS (
-		SELECT 1 FROM logs WHERE doc_no=$9 AND screen_code=$10
-		  AND data2=$11 AND function_code=1
+		SELECT 1 FROM logs WHERE doc_no=$10 AND screen_code=$11
+		  AND data2=$12 AND function_code=1
 	)`,
-		buildMainLogData1(p), profileMarker, route.transFlag, guid, p.DocDate, p.DocNo,
-		p.TotalAmountDecimal, docQty, p.DocNo, route.transFlag, profileMarker)
+		buildMainLogData1(p, route), profileMarker, route.transFlag, guid, p.DocDate, p.DocNo,
+		p.TotalAmountDecimal, menuName, docQty, p.DocNo, route.transFlag, profileMarker)
 	if err != nil {
 		return rows, fmt.Errorf("insert main SML log profile: %w", err)
 	}
 	return rows + int(tag.RowsAffected()), nil
+}
+
+func profileMainLogMenu(route docRoute) string {
+	switch route.name {
+	case routeSaleOrder.name:
+		return "menu_so_sale_order"
+	case routeSaleInvoice.name:
+		return "menu_so_invoice"
+	default:
+		return ""
+	}
 }
 
 func saleVATRegisterApplicable(p docPayload, route docRoute) bool {
@@ -490,7 +502,7 @@ func validateStoredProfileHash(stored, requested, docNo string) error {
 		"doc_no already exists with a different canonical payload hash", gin.H{"doc_no": docNo})
 }
 
-func buildMainLogData1(p docPayload) string {
+func buildMainLogData1(p docPayload, route docRoute) string {
 	docDate, _ := time.Parse("2006-01-02", p.DocDate)
 	thaiDate := fmt.Sprintf("%d/%d/%d", docDate.Day(), int(docDate.Month()), docDate.Year()+543)
 	xml := `<?xml version="1.0" encoding="utf-8"?><top>` +
@@ -499,15 +511,18 @@ func buildMainLogData1(p docPayload) string {
 		`<d t=1 f=doc_no>` + html.EscapeString(p.DocNo) + `</d>` +
 		`<d t=1 f=doc_format_code>` + html.EscapeString(p.DocFormatCode) + `</d>` +
 		`<d t=1 f=cust_code>` + html.EscapeString(p.CustCode) + `</d>` +
-		`<d t=1 f=contactor></d>` +
-		`<d t=2 f=tax_doc_date>` + thaiDate + `</d>` +
-		`<d t=1 f=tax_doc_no>` + html.EscapeString(p.DocNo) + `</d>` +
+		`<d t=1 f=contactor></d>`
+	if route.name == routeSaleInvoice.name {
+		xml += `<d t=2 f=tax_doc_date>` + thaiDate + `</d>` +
+			`<d t=1 f=tax_doc_no>` + html.EscapeString(p.DocNo) + `</d>`
+	}
+	xml +=
 		`<d t=1 f=doc_ref>` + html.EscapeString(p.DocRef) + `</d>` +
-		`<d t=2 f=doc_ref_date></d>` +
-		`<d t=5 f=inquiry_type>` + strconv.Itoa(p.InquiryType) + `</d>` +
-		`<d t=5 f=vat_type>` + strconv.Itoa(p.VATType) + `</d>` +
-		`<d t=1 f=sale_code>` + html.EscapeString(p.SaleCode) + `</d>` +
-		`<d t=1 f=sale_group></d></top>`
+			`<d t=2 f=doc_ref_date></d>` +
+			`<d t=5 f=inquiry_type>` + strconv.Itoa(p.InquiryType) + `</d>` +
+			`<d t=5 f=vat_type>` + strconv.Itoa(p.VATType) + `</d>` +
+			`<d t=1 f=sale_code>` + html.EscapeString(p.SaleCode) + `</d>` +
+			`<d t=1 f=sale_group></d></top>`
 	return html.EscapeString(xml)
 }
 
@@ -546,14 +561,15 @@ func ensurePreparedProfileDecimals(items []preparedDocItem) {
 	}
 }
 
-func buildERPLogDataNew(p docPayload) ([]byte, error) {
+func buildERPLogDataNew(p docPayload, route docRoute) ([]byte, error) {
 	docDate, err := time.Parse("2006-01-02", p.DocDate)
 	if err != nil {
 		return nil, fmt.Errorf("parse doc_date for SML VAT audit: %w", err)
 	}
 	vatEffectivePeriod, vatEffectiveYear := smlVATEffectivePeriod(docDate)
-	details := make([]map[string]any, 0, len(p.Details))
-	for _, item := range p.Details {
+	items := profileRouteItems(p, route)
+	details := make([]map[string]any, 0, len(items))
+	for _, item := range items {
 		details = append(details, map[string]any{
 			"barcode": "", "date_expire": nil, "discount": item.DiscountAmountDecimal,
 			"discount_amount": item.DiscountAmountDecimal, "divide_value": "1", "doc_ref_type": 0,
@@ -583,7 +599,7 @@ func buildERPLogDataNew(p docPayload) ([]byte, error) {
 		shipment["transport_telephone"] = p.Shipment.TransportTelephone
 	}
 	vatRows := []map[string]any{}
-	if saleVATRegisterApplicable(p, routeSaleInvoice) {
+	if saleVATRegisterApplicable(p, route) {
 		vatRows = append(vatRows, map[string]any{
 			"amount": p.TotalVATValueDecimal, "ar_name": "", "base_caltax_amount": p.TotalBeforeVATDecimal,
 			"branch_code": p.BranchCode, "branch_type": 0, "description": "", "except_tax_amount": "0",
@@ -606,5 +622,40 @@ func buildERPLogDataNew(p docPayload) ([]byte, error) {
 		"screenvatsale":        vatRows,
 		"screenwithholdingtax": map[string]any{},
 	}
+	if route.name == routeSaleOrder.name {
+		for _, detail := range details {
+			delete(detail, "date_expire")
+			delete(detail, "hidden_cost_1")
+		}
+		data = map[string]any{
+			"screenbottom": map[string]any{
+				"remark_2": p.Remark2, "remark_3": "", "remark_4": "", "remark_5": p.Remark5,
+			},
+			"screendetail": data["screendetail"],
+			"screenmore": map[string]any{
+				"credit_date": p.DocDate, "credit_day": 0, "discount_word": headerDiscountWord(p.TotalDiscount),
+				"expire_date": p.DocDate, "expire_day": 0, "remark": p.Remark, "send_date": p.DocDate,
+				"send_day": 0, "send_type": 0, "total_after_vat": p.TotalAfterVATDecimal,
+				"total_amount": p.TotalAmountDecimal, "total_before_vat": p.TotalBeforeVATDecimal,
+				"total_discount": p.TotalDiscountDecimal, "total_except_vat": p.TotalExceptVATDecimal,
+				"total_value": p.TotalValueDecimal, "total_vat_value": p.TotalVATValueDecimal,
+				"vat_rate": p.VATRateDecimal,
+			},
+			"screenshipment": data["screenshipment"],
+			"screentop": map[string]any{
+				"contactor": "", "cust_code": p.CustCode, "doc_date": p.DocDate,
+				"doc_format_code": p.DocFormatCode, "doc_no": p.DocNo, "doc_ref": p.DocRef,
+				"doc_ref_date": p.DocRefDate, "doc_time": p.DocTime, "inquiry_type": p.InquiryType,
+				"sale_code": p.SaleCode, "sale_group": "", "vat_type": p.VATType,
+			},
+		}
+	}
 	return json.Marshal(data)
+}
+
+func profileRouteItems(p docPayload, route docRoute) []docItem {
+	if route.itemKey == "items" {
+		return p.Items
+	}
+	return p.Details
 }

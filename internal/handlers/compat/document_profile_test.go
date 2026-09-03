@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"errors"
 	"github.com/gin-gonic/gin"
@@ -93,7 +95,7 @@ func TestGatewayCapabilitiesAdvertiseEverySalesProfileRouteAndRevision(t *testin
 }
 
 func TestLegacyDocumentResponseContractDoesNotGainProfileFields(t *testing.T) {
-	response := documentWriteResponse(docPayload{DocNo: "BF-1"}, false, 2, erpLogResult{Status: "created"})
+	response := documentWriteResponse(docPayload{DocNo: "BF-1"}, routeSaleInvoice, false, 2, erpLogResult{Status: "created"})
 	for _, key := range []string{"doc_no", "status", "rows_written", "log_status"} {
 		if _, ok := response[key]; !ok {
 			t.Fatalf("legacy response missing %q: %+v", key, response)
@@ -109,7 +111,7 @@ func TestLegacyDocumentResponseContractDoesNotGainProfileFields(t *testing.T) {
 func TestProfileResponseKeepsCoreSuccessWhenLogsDatabaseIsDown(t *testing.T) {
 	payload := profilePayloadForTest()
 	payload.ProfilePayloadHash = strings.Repeat("a", 64)
-	response := documentWriteResponse(payload, false, 4, erpLogResult{
+	response := documentWriteResponse(payload, routeSaleInvoice, false, 4, erpLogResult{
 		Status: "warning", Warning: "บันทึก SML erp_logs ไม่สำเร็จ: เชื่อมต่อฐานข้อมูล logs ไม่ได้",
 	})
 	if response["core_status"] != "created" || response["profile_status"] != "needs_reconciliation" || response["reconciliation_required"] != true {
@@ -204,7 +206,7 @@ func TestProfileMainLogEscapesHTMLAsLiteralData(t *testing.T) {
 	if err := normalizeAndValidate(&payload, payload.Details, routeSaleInvoice); err != nil {
 		t.Fatal(err)
 	}
-	encoded := buildMainLogData1(payload)
+	encoded := buildMainLogData1(payload, routeSaleInvoice)
 	if strings.Contains(encoded, "<script>") || strings.Contains(encoded, "</script>") {
 		t.Fatalf("script markup was not escaped: %s", encoded)
 	}
@@ -351,7 +353,7 @@ func TestSaleInvoiceProfileVATRegisterCoversEverySMLVATMode(t *testing.T) {
 				t.Fatalf("VAT register base/amount args=%#v, want %s/%s", tx.execCalls[0].args[3:6], tt.beforeVAT, tt.vat)
 			}
 
-			body, err := buildERPLogDataNew(p)
+			body, err := buildERPLogDataNew(p, routeSaleInvoice)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -366,7 +368,7 @@ func TestSaleInvoiceProfileVATRegisterCoversEverySMLVATMode(t *testing.T) {
 			if len(vatRows) != 1 || vatRows[0]["base_caltax_amount"] != expectedBeforeVAT || vatRows[0]["amount"] != expectedVAT {
 				t.Fatalf("screenvatsale=%+v", vatRows)
 			}
-			response := documentWriteResponse(p, false, 1, erpLogResult{Status: "created"})
+			response := documentWriteResponse(p, routeSaleInvoice, false, 1, erpLogResult{Status: "created"})
 			if !testContainsString(response["required_checks"].([]string), "vat") || !testContainsString(response["completed_checks"].([]string), "vat") {
 				t.Fatalf("response VAT checks missing: %+v", response)
 			}
@@ -389,6 +391,139 @@ func TestSaleInvoiceProfileRejectsVATTotalsThatDoNotMatchMode(t *testing.T) {
 	if err := normalizeAndValidate(&p, p.Details, routeSaleInvoice); err == nil || !strings.Contains(err.Error(), "vat_type 2") {
 		t.Fatalf("zero-rate non-zero header VAT totals must fail before core write: %v", err)
 	}
+}
+
+func TestSaleOrderProfileUsesVerifiedRelationsAndDetailDirection(t *testing.T) {
+	p := profilePayloadForTest()
+	p.DocNo = "BF-SO26090001"
+	p.DocFormatCode = "SO"
+	p.ShipmentApplicability = "required"
+	p.MarketplacePhysicalGoods = true
+	p.Shipment = &docShipment{TransportName: "Synthetic", TransportAddress: "Synthetic address", TransportTelephone: "0000000000"}
+	p.Items = append([]docItem(nil), p.Details...)
+	p.Details = nil
+	if err := normalizeAndValidate(&p, p.Items, routeSaleOrder); err != nil {
+		t.Fatalf("Sale Order Profile V1 rejected: %v", err)
+	}
+	if got := documentDetailCalcFlag(routeSaleOrder); got != 1 {
+		t.Fatalf("sale order detail calc_flag=%d want 1", got)
+	}
+	if got := documentDetailCalcFlag(routeSaleInvoice); got != -1 {
+		t.Fatalf("sale invoice detail calc_flag=%d want -1", got)
+	}
+
+	tx := &docRefFakeTx{}
+	if _, err := writeProfileRelations(context.Background(), tx, p, routeSaleOrder, strings.Repeat("b", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if len(tx.execCalls) != 2 || strings.Contains(tx.execCalls[0].sql, "gl_journal_vat_sale") ||
+		!strings.Contains(tx.execCalls[0].sql, "ic_trans_shipment") {
+		t.Fatalf("Sale Order must write shipment + main log and no VAT: %+v", tx.execCalls)
+	}
+	mainLog := tx.execCalls[1]
+	if !testArgsContain(mainLog.args, "menu_so_sale_order") {
+		t.Fatalf("Sale Order main log menu missing: args=%#v", mainLog.args)
+	}
+
+	body, err := buildERPLogDataNew(p, routeSaleOrder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(body, &data); err != nil {
+		t.Fatal(err)
+	}
+	wantSections := []string{"screenbottom", "screendetail", "screenmore", "screenshipment", "screentop"}
+	if len(data) != len(wantSections) {
+		t.Fatalf("Sale Order ERP sections=%v", reflect.ValueOf(data).MapKeys())
+	}
+	for _, section := range wantSections {
+		if _, ok := data[section]; !ok {
+			t.Fatalf("Sale Order ERP log missing %s", section)
+		}
+	}
+	for _, forbidden := range []string{"screenvatsale", "screengldetail", "screengltop", "screenpay", "screenpaydeposit", "screenwithholdingtax"} {
+		if _, ok := data[forbidden]; ok {
+			t.Fatalf("Sale Order ERP log must not contain placeholder %s", forbidden)
+		}
+	}
+	assertJSONKeys(t, data["screenbottom"], []string{"remark_2", "remark_3", "remark_4", "remark_5"})
+	assertJSONKeys(t, data["screenmore"], []string{
+		"credit_date", "credit_day", "discount_word", "expire_date", "expire_day", "remark",
+		"send_date", "send_day", "send_type", "total_after_vat", "total_amount", "total_before_vat",
+		"total_discount", "total_except_vat", "total_value", "total_vat_value", "vat_rate",
+	})
+	assertJSONKeys(t, data["screentop"], []string{
+		"contactor", "cust_code", "doc_date", "doc_format_code", "doc_no", "doc_ref",
+		"doc_ref_date", "doc_time", "inquiry_type", "sale_code", "sale_group", "vat_type",
+	})
+	encoded := buildMainLogData1(p, routeSaleOrder)
+	if strings.Contains(encoded, "tax_doc_no") || strings.Contains(encoded, "tax_doc_date") {
+		t.Fatalf("Sale Order main log must not claim tax-document fields: %s", encoded)
+	}
+	taxNo, taxDate := profileHeaderTaxDocument(routeSaleOrder, p, time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC))
+	if taxNo != "" || taxDate != nil {
+		t.Fatalf("Sale Order header tax fields=(%q,%v), want blank", taxNo, taxDate)
+	}
+}
+
+func assertJSONKeys(t *testing.T, raw json.RawMessage, want []string) {
+	t.Helper()
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	gotKeys := make([]string, 0, len(got))
+	for key := range got {
+		gotKeys = append(gotKeys, key)
+	}
+	sort.Strings(gotKeys)
+	sort.Strings(want)
+	if !reflect.DeepEqual(gotKeys, want) {
+		t.Fatalf("JSON keys=%v want %v", gotKeys, want)
+	}
+}
+
+func TestSaleOrderProfileHashAndLogsFailureRemainRecoverable(t *testing.T) {
+	p := profilePayloadForTest()
+	p.DocNo = "BF-SO26090002"
+	p.Items = append([]docItem(nil), p.Details...)
+	p.Details = nil
+	if err := normalizeAndValidate(&p, p.Items, routeSaleOrder); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := canonicalProfileHash("aoy", p, p.Items, routeSaleOrder)
+	if err != nil || len(hash) != 64 {
+		t.Fatalf("Sale Order canonical hash=%q err=%v", hash, err)
+	}
+	invoiceHash, err := canonicalProfileHash("aoy", p, p.Items, routeSaleInvoice)
+	if err != nil || invoiceHash == hash {
+		t.Fatalf("route identity missing from hash: saleorder=%q invoice=%q err=%v", hash, invoiceHash, err)
+	}
+	p.ProfilePayloadHash = hash
+	response := documentWriteResponse(p, routeSaleOrder, false, 3, erpLogResult{Status: "warning", Warning: "logs unavailable"})
+	if response["core_status"] != "created" || response["profile_status"] != "needs_reconciliation" || response["reconciliation_required"] != true {
+		t.Fatalf("Sale Order core must remain committed when logs fail: %+v", response)
+	}
+	checks := response["required_checks"].([]string)
+	if testContainsString(checks, "vat") || !testContainsString(checks, "erp_log") {
+		t.Fatalf("Sale Order checks=%v", checks)
+	}
+	if err := validateStoredProfileHash(hash, hash, p.DocNo); err != nil {
+		t.Fatalf("identical retry rejected: %v", err)
+	}
+	if err := validateStoredProfileHash(hash, strings.Repeat("c", 64), p.DocNo); err == nil {
+		t.Fatal("different Sale Order payload hash must conflict")
+	}
+}
+
+func testArgsContain(values []any, want string) bool {
+	for _, value := range values {
+		if fmt.Sprint(value) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestProfileValidationFailsBeforeCoreForIncompleteShipmentAndDecimalMismatch(t *testing.T) {
@@ -457,8 +592,8 @@ func TestProfileRelationsWriteVATShipmentAndMainLogInCallerTransaction(t *testin
 		t.Fatalf("shipment profile must separate INSERT and NOT EXISTS parameters: args=%d sql=%s", len(shipmentCall.args), shipmentCall.sql)
 	}
 	mainLogCall := tx.execCalls[2]
-	if len(mainLogCall.args) != 11 || !strings.Contains(mainLogCall.sql, "doc_no=$9 AND screen_code=$10") ||
-		!strings.Contains(mainLogCall.sql, "data2=$11") {
+	if len(mainLogCall.args) != 12 || !strings.Contains(mainLogCall.sql, "doc_no=$10 AND screen_code=$11") ||
+		!strings.Contains(mainLogCall.sql, "data2=$12") {
 		t.Fatalf("main log profile must separate INSERT and NOT EXISTS parameters: args=%d sql=%s", len(mainLogCall.args), mainLogCall.sql)
 	}
 	if !strings.Contains(mainLogCall.args[1].(string), hash) {
@@ -471,7 +606,7 @@ func TestProfileERPLogDataNewHasFrozenSMLSections(t *testing.T) {
 	if err := normalizeAndValidate(&p, p.Details, routeSaleInvoice); err != nil {
 		t.Fatal(err)
 	}
-	body, err := buildERPLogDataNew(p)
+	body, err := buildERPLogDataNew(p, routeSaleInvoice)
 	if err != nil {
 		t.Fatal(err)
 	}

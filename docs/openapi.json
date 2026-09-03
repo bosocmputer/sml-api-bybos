@@ -1480,6 +1480,22 @@
           "items"
         ],
         "properties": {
+          "document_profile_version": {
+            "type": "string",
+            "enum": ["sml-document-v1"],
+            "description": "Opt in to the Sale Order Profile V1 contract. Omit to preserve legacy behavior."
+          },
+          "marketplace_physical_goods": {"type": "boolean"},
+          "shipment_applicability": {
+            "type": "string",
+            "enum": ["required", "not_applicable"]
+          },
+          "shipment": {"$ref": "#/components/schemas/DocumentProfileShipment"},
+          "creator_code": {"type": "string", "enum": ["BILLFLOW"]},
+          "cashier_code": {"type": "string", "enum": ["BILLFLOW"]},
+          "user_request": {"type": "string", "enum": ["NEXFLOW"]},
+          "currency_code": {"type": "string", "enum": ["THB"]},
+          "exchange_rate_decimal": {"type": "string", "enum": ["1"]},
           "doc_no": {
             "type": "string",
             "example": "BF-SO2604000001"
@@ -1513,16 +1529,20 @@
             "type": "number",
             "default": 7
           },
+          "vat_rate_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
           "remark": {
             "type": "string"
           },
           "remark_2": {
             "type": "string",
-            "description": "สถานะเอกสารระดับหัวเอกสาร เช่น tax/notax/re"
+            "maxLength": 255,
+            "description": "Profile V1 free-text note."
           },
           "remark_5": {
             "type": "string",
-            "description": "หมายเหตุ 5 เช่น Shopee order number"
+            "maxLength": 255,
+            "pattern": "^NEXFLOW\\|",
+            "description": "Required Profile V1 provenance marker."
           },
           "inquiry_type": {
             "type": "integer",
@@ -1535,6 +1555,7 @@
           },
           "items": {
             "type": "array",
+            "maxItems": 500,
             "items": {
               "$ref": "#/components/schemas/DocItem"
             }
@@ -1571,7 +1592,14 @@
           },
           "total_amount": {
             "type": "number"
-          }
+          },
+          "total_value_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_discount_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_before_vat_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_vat_value_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_except_vat_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_after_vat_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_amount_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"}
         }
       },
       "StockItem": {
