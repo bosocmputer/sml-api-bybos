@@ -64,6 +64,11 @@ var (
 		transType: models.TransTypeSale, itemKey: "items", partyKind: "customer",
 		menuName: "BillFlow - ใบสั่งขาย",
 	}
+	routeSaleOrderCancel = docRoute{
+		name: "saleordercancel", transFlag: models.TransFlagSaleOrderCancel,
+		transType: models.TransTypeSale, itemKey: "details", partyKind: "customer",
+		menuName: "",
+	}
 	routeSaleInvoice = docRoute{
 		name: "saleinvoice", transFlag: models.TransFlagSaleInvoice,
 		transType: models.TransTypeSale, itemKey: "details", partyKind: "customer",
@@ -188,6 +193,10 @@ type updateDocRefResult struct {
 
 type docItem struct {
 	DocRef                  string  `json:"doc_ref"`
+	RefDocNo                string  `json:"ref_doc_no,omitempty"`
+	RefLineNumber           int     `json:"ref_line_number,omitempty"`
+	DocRefType              int     `json:"doc_ref_type,omitempty"`
+	BranchCode              string  `json:"branch_code,omitempty"`
 	ItemCode                string  `json:"item_code"`
 	ItemName                string  `json:"item_name"`
 	LineNumber              int     `json:"line_number"`
@@ -674,7 +683,9 @@ func insertERPLog(ctx context.Context, pool erpLogPool, p docPayload, route docR
 	duplicateCondition := `doc_no=$1 AND trans_flag=$2 AND function_code=1
 			  AND COALESCE(menu_name,'') LIKE 'BillFlow%'`
 	if p.DocumentProfileVersion == documentProfileV1 {
-		duplicateCondition += ` AND data_new IS NOT NULL AND octet_length(data_new)>0`
+		duplicateCondition = `doc_no=$1 AND trans_flag=$2 AND function_code=1
+			  AND COALESCE(user_code,'')='BILLFLOW'
+			  AND data_new IS NOT NULL AND octet_length(data_new)>0`
 	}
 	if err := pool.QueryRow(ctx, `
 		SELECT EXISTS(
@@ -699,7 +710,7 @@ func insertERPLog(ctx context.Context, pool erpLogPool, p docPayload, route docR
 			WHERE roworder=(
 				SELECT roworder FROM erp_logs
 				 WHERE doc_no=$4 AND trans_flag=$5 AND function_code=1
-				   AND COALESCE(menu_name,'') LIKE 'BillFlow%'
+				   AND COALESCE(user_code,'')='BILLFLOW'
 				 ORDER BY roworder LIMIT 1
 			) AND (data_new IS NULL OR octet_length(data_new)=0)`,
 			dataNew, p.CustCode, p.TotalAmountDecimal, p.DocNo, route.transFlag)
@@ -1241,6 +1252,13 @@ func documentDetailCalcFlag(route docRoute) int {
 		return -1
 	}
 	return 1
+}
+
+func cancellationDetailCalcFlag(route docRoute) int {
+	if route.name == routeSaleOrderCancel.name {
+		return -1
+	}
+	return documentDetailCalcFlag(route)
 }
 
 func normalizeDocItem(item docItem) docItem {

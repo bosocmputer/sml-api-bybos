@@ -45,6 +45,9 @@ var docNoRoutes = map[string]docNoRoute{
 	"saleorder":           {name: "saleorder", transFlag: models.TransFlagSaleOrder, table: "ic_trans"},
 	"sale_order":          {name: "saleorder", transFlag: models.TransFlagSaleOrder, table: "ic_trans"},
 	"so":                  {name: "saleorder", transFlag: models.TransFlagSaleOrder, table: "ic_trans"},
+	"saleordercancel":     {name: "saleordercancel", transFlag: models.TransFlagSaleOrderCancel, table: "ic_trans"},
+	"sale_order_cancel":   {name: "saleordercancel", transFlag: models.TransFlagSaleOrderCancel, table: "ic_trans"},
+	"ssc":                 {name: "saleordercancel", transFlag: models.TransFlagSaleOrderCancel, table: "ic_trans"},
 	"saleinvoice":         {name: "saleinvoice", transFlag: models.TransFlagSaleInvoice, table: "ic_trans"},
 	"sale_invoice":        {name: "saleinvoice", transFlag: models.TransFlagSaleInvoice, table: "ic_trans"},
 	"si":                  {name: "saleinvoice", transFlag: models.TransFlagSaleInvoice, table: "ic_trans"},
@@ -68,7 +71,7 @@ var docNoRoutes = map[string]docNoRoute{
 func (h *DocNoHandler) Next(c *gin.Context) {
 	route, ok := resolveDocNoRoute(c.Query("route"))
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "route must be saleorder, saleinvoice, saleinvoicecancel, creditnote, purchaseorder, or receipt"})
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "route must be saleorder, saleordercancel, saleinvoice, saleinvoicecancel, creditnote, purchaseorder, or receipt"})
 		return
 	}
 	prefix := strings.TrimSpace(c.DefaultQuery("prefix", "BF"))

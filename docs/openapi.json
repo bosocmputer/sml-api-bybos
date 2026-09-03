@@ -2058,8 +2058,12 @@
       },
       "SaleInvoiceCancelRequest": {
         "type": "object",
-        "description": "doc_no is the new document number. Use a doc_format_code configured for screen SIC on /void or screen ST on /cancel.",
+        "description": "doc_no is the new document number. Profile V1 is opt-in. Use a doc_format_code configured for screen SSC on sale-order /void, SIC on sale-invoice /void, or ST on /cancel.",
         "properties": {
+          "document_profile_version": {
+            "type": "string",
+            "enum": ["sml-document-v1"]
+          },
           "doc_no": {
             "type": "string",
             "example": "BF-CN2605000001"
@@ -2081,8 +2085,26 @@
           "remark": {
             "type": "string"
           },
+          "remark_2": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "remark_5": {
+            "type": "string",
+            "maxLength": 255,
+            "example": "NEXFLOW|shopee_realtime|ORDER-1"
+          },
+          "creator_code": {
+            "type": "string",
+            "example": "BILLFLOW"
+          },
+          "cashier_code": {
+            "type": "string",
+            "example": "BILLFLOW"
+          },
           "user_request": {
-            "type": "string"
+            "type": "string",
+            "example": "NEXFLOW"
           }
         }
       },
@@ -2092,6 +2114,7 @@
           "kind": {
             "type": "string",
             "enum": [
+              "sale_order_cancel",
               "sale_invoice_cancel",
               "credit_note"
             ]
@@ -2193,6 +2216,33 @@
           },
           "message": {
             "type": "string"
+          },
+          "log_status": {
+            "type": "string"
+          },
+          "log_warning": {
+            "type": "string"
+          },
+          "payload_hash": {
+            "type": "string"
+          },
+          "core_status": {
+            "type": "string"
+          },
+          "profile_status": {
+            "type": "string",
+            "enum": ["pending", "complete", "needs_reconciliation", "terminal_failure"]
+          },
+          "required_checks": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "completed_checks": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "reconciliation_required": {
+            "type": "boolean"
           }
         }
       },
@@ -3479,7 +3529,7 @@
           "Doc Formats"
         ],
         "summary": "Preview next SML document number",
-        "description": "Reads existing SML documents and returns the next number for saleorder, saleinvoice, purchaseorder, or receipt.",
+        "description": "Reads existing SML documents and returns the next number for saleorder, saleordercancel, saleinvoice, saleinvoicecancel, creditnote, purchaseorder, or receipt.",
         "parameters": [
           {
             "name": "route",
@@ -3489,11 +3539,17 @@
               "type": "string",
               "enum": [
                 "saleorder",
+                "saleordercancel",
                 "saleinvoice",
+                "saleinvoicecancel",
+                "creditnote",
                 "purchaseorder",
                 "receipt",
                 "so",
+                "ssc",
                 "si",
+                "sic",
+                "cn",
                 "po",
                 "rc"
               ]
@@ -5107,6 +5163,92 @@
               }
             }
           }
+        }
+      }
+    },
+    "/api/v1/ic/sale-orders/{doc_no}/void/preview": {
+      "post": {
+        "tags": ["Documents"],
+        "summary": "Preview cancellation of a sale order",
+        "description": "Read-only preview of the full-document TRANS_FLAG 37 SSC reversal. The source sale order is not changed.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "example": "SO26090001"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SaleInvoiceCancelRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "preview (status=ready or already_exists)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {"$ref": "#/components/schemas/SuccessResponse"},
+                    {"properties": {"data": {"$ref": "#/components/schemas/SaleInvoiceCancelPreview"}}}
+                  ]
+                }
+              }
+            }
+          },
+          "400": {"description": "invalid request or SSC document format", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "source sale order not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "source already cancelled, unverifiable ownership, or document busy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/ic/sale-orders/{doc_no}/void": {
+      "post": {
+        "tags": ["Documents"],
+        "summary": "Cancel a sale order",
+        "description": "Creates an exact full-document TRANS_FLAG 37 SSC reversal, then marks the source TRANS_FLAG 36 used_status=1. Profile V1 is idempotent by source intent and payload hash.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "example": "SO26090001"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SaleInvoiceCancelRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "sale order cancellation created",
+            "content": {"application/json": {"schema": {"allOf": [
+              {"$ref": "#/components/schemas/SuccessResponse"},
+              {"properties": {"data": {"$ref": "#/components/schemas/SaleInvoiceCancelPreview"}}}
+            ]}}}
+          },
+          "200": {
+            "description": "already_exists and reconciled",
+            "content": {"application/json": {"schema": {"allOf": [
+              {"$ref": "#/components/schemas/SuccessResponse"},
+              {"properties": {"data": {"$ref": "#/components/schemas/SaleInvoiceCancelPreview"}}}
+            ]}}}
+          },
+          "400": {"description": "invalid request or SSC document format", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "source sale order not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "duplicate, source-state conflict, unverifiable ownership, hash mismatch, or document busy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "413": {"description": "request or source item limit exceeded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
         }
       }
     },

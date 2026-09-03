@@ -44,6 +44,8 @@ func TestOpenAPISpecIsValidAndBillFlowNative(t *testing.T) {
 		"/api/v1/ic/stock-balances/batch",
 		"/api/v1/marketplace/nextstep/orders",
 		"/api/v1/ic/sale-orders",
+		"/api/v1/ic/sale-orders/{doc_no}/void/preview",
+		"/api/v1/ic/sale-orders/{doc_no}/void",
 		"/api/v1/ic/document-profile-capabilities",
 		"/api/v1/ic/sale-invoices",
 		"/api/v1/ic/sale-invoices/{doc_no}/void/preview",
@@ -101,6 +103,13 @@ func TestOpenAPISpecIsValidAndBillFlowNative(t *testing.T) {
 	details := saleInvoiceProps["details"].(map[string]any)
 	if details["maxItems"] != float64(500) {
 		t.Fatalf("SaleInvoiceRequest.details maxItems = %v, want 500", details["maxItems"])
+	}
+
+	cancellationProps := schemas["SaleInvoiceCancelRequest"].(map[string]any)["properties"].(map[string]any)
+	for _, field := range []string{"document_profile_version", "remark_2", "remark_5", "creator_code", "cashier_code", "user_request"} {
+		if _, ok := cancellationProps[field]; !ok {
+			t.Fatalf("SaleInvoiceCancelRequest.%s missing", field)
+		}
 	}
 }
 

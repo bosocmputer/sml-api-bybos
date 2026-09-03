@@ -15,6 +15,9 @@ func TestResolveDocNoRoute(t *testing.T) {
 		wantFound bool
 	}{
 		{in: "saleorder", wantName: "saleorder", wantFlag: models.TransFlagSaleOrder, wantFound: true},
+		{in: "saleordercancel", wantName: "saleordercancel", wantFlag: models.TransFlagSaleOrderCancel, wantFound: true},
+		{in: "sale_order_cancel", wantName: "saleordercancel", wantFlag: models.TransFlagSaleOrderCancel, wantFound: true},
+		{in: "SSC", wantName: "saleordercancel", wantFlag: models.TransFlagSaleOrderCancel, wantFound: true},
 		{in: "SI", wantName: "saleinvoice", wantFlag: models.TransFlagSaleInvoice, wantFound: true},
 		{in: "saleinvoicecancel", wantName: "saleinvoicecancel", wantFlag: models.TransFlagSaleInvoiceCancel, wantFound: true},
 		{in: "SIC", wantName: "saleinvoicecancel", wantFlag: models.TransFlagSaleInvoiceCancel, wantFound: true},

@@ -10,45 +10,88 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"sml-api-bybos/internal/api"
 	"sml-api-bybos/internal/models"
 )
 
 type saleInvoiceCancelRequest struct {
-	DocNo         string `json:"doc_no"`
-	DocDate       string `json:"doc_date"`
-	DocTime       string `json:"doc_time"`
-	DocFormatCode string `json:"doc_format_code"`
-	Remark        string `json:"remark"`
-	UserRequest   string `json:"user_request"`
+	DocumentProfileVersion string `json:"document_profile_version"`
+	DocNo                  string `json:"doc_no"`
+	DocDate                string `json:"doc_date"`
+	DocTime                string `json:"doc_time"`
+	DocFormatCode          string `json:"doc_format_code"`
+	Remark                 string `json:"remark"`
+	Remark2                string `json:"remark_2"`
+	Remark5                string `json:"remark_5"`
+	CreatorCode            string `json:"creator_code"`
+	CashierCode            string `json:"cashier_code"`
+	UserRequest            string `json:"user_request"`
 }
 
 type saleInvoiceCancelKind string
 
 const (
+	saleInvoiceCancelKindSaleOrder  saleInvoiceCancelKind = "sale_order_cancel"
 	saleInvoiceCancelKindVoid       saleInvoiceCancelKind = "sale_invoice_cancel"
 	saleInvoiceCancelKindCreditNote saleInvoiceCancelKind = "credit_note"
 )
 
 type saleInvoiceCancelPreview struct {
-	Status              string                         `json:"status"`
-	Kind                saleInvoiceCancelKind          `json:"kind"`
-	SaleDocNo           string                         `json:"sale_doc_no"`
-	CancelDocNo         string                         `json:"cancel_doc_no,omitempty"`
-	ExistingCancelDocNo string                         `json:"existing_cancel_doc_no,omitempty"`
-	TransFlag           int                            `json:"trans_flag"`
-	DocFormatCode       string                         `json:"doc_format_code"`
-	DocDate             string                         `json:"doc_date"`
-	CustCode            string                         `json:"cust_code"`
-	TotalAmount         float64                        `json:"total_amount"`
-	TotalValue          float64                        `json:"total_value"`
-	TotalVATValue       float64                        `json:"total_vat_value"`
-	TotalAfterVAT       float64                        `json:"total_after_vat"`
-	ItemCount           int                            `json:"item_count"`
-	Items               []saleInvoiceCancelPreviewItem `json:"items"`
-	SourceTotalAmount   float64                        `json:"source_total_amount"`
-	SourceItemCount     int                            `json:"source_item_count"`
-	Message             string                         `json:"message,omitempty"`
+	Status                 string                         `json:"status"`
+	Kind                   saleInvoiceCancelKind          `json:"kind"`
+	SaleDocNo              string                         `json:"sale_doc_no"`
+	CancelDocNo            string                         `json:"cancel_doc_no,omitempty"`
+	ExistingCancelDocNo    string                         `json:"existing_cancel_doc_no,omitempty"`
+	TransFlag              int                            `json:"trans_flag"`
+	DocFormatCode          string                         `json:"doc_format_code"`
+	DocDate                string                         `json:"doc_date"`
+	CustCode               string                         `json:"cust_code"`
+	TotalAmount            float64                        `json:"total_amount"`
+	TotalValue             float64                        `json:"total_value"`
+	TotalVATValue          float64                        `json:"total_vat_value"`
+	TotalAfterVAT          float64                        `json:"total_after_vat"`
+	ItemCount              int                            `json:"item_count"`
+	Items                  []saleInvoiceCancelPreviewItem `json:"items"`
+	SourceTotalAmount      float64                        `json:"source_total_amount"`
+	SourceItemCount        int                            `json:"source_item_count"`
+	Message                string                         `json:"message,omitempty"`
+	LogStatus              string                         `json:"log_status,omitempty"`
+	LogWarning             string                         `json:"log_warning,omitempty"`
+	PayloadHash            string                         `json:"payload_hash,omitempty"`
+	CoreStatus             string                         `json:"core_status,omitempty"`
+	ProfileStatus          string                         `json:"profile_status,omitempty"`
+	RequiredChecks         []string                       `json:"required_checks,omitempty"`
+	CompletedChecks        []string                       `json:"completed_checks,omitempty"`
+	ReconciliationRequired bool                           `json:"reconciliation_required"`
+	profilePayload         *docPayload                    `json:"-"`
+}
+
+type cancellationLockExecutor interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func acquireCancellationSourceLock(ctx context.Context, tx cancellationLockExecutor, sourceTransFlag int, sourceDocNo string) error {
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '3s'`); err != nil {
+		return cancellationLockError(err, sourceDocNo)
+	}
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,
+		fmt.Sprintf("sml-sales-cancellation:%d:%s", sourceTransFlag, strings.TrimSpace(sourceDocNo)))
+	if err != nil {
+		return cancellationLockError(err, sourceDocNo)
+	}
+	return nil
+}
+
+func cancellationLockError(err error, sourceDocNo string) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+		return newAppError(http.StatusConflict, "document_busy", "another cancellation request is processing this source document", gin.H{"source_doc_no": sourceDocNo})
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return newAppError(http.StatusConflict, "document_busy", "another cancellation request is processing this source document", gin.H{"source_doc_no": sourceDocNo})
+	}
+	return fmt.Errorf("lock cancellation source document: %w", err)
 }
 
 type saleInvoiceCancelPreviewItem struct {
@@ -222,6 +265,9 @@ func previewSaleInvoiceCancellation(ctx context.Context, pool txBeginner, saleDo
 	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
 		return saleInvoiceCancelPreview{}, fmt.Errorf("set repeatable-read isolation: %w", err)
 	}
+	if err := acquireCancellationSourceLock(ctx, tx, models.TransFlagSaleInvoice, saleDocNo); err != nil {
+		return saleInvoiceCancelPreview{}, err
+	}
 	return buildSaleInvoiceCancelPreview(ctx, tx, saleDocNo, req, false)
 }
 
@@ -236,6 +282,9 @@ func createSaleInvoiceCancellation(ctx context.Context, pool txBeginner, saleDoc
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
 		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("set repeatable-read isolation: %w", err)
+	}
+	if err := acquireCancellationSourceLock(ctx, tx, models.TransFlagSaleInvoice, saleDocNo); err != nil {
+		return saleInvoiceCancelPreview{}, 0, err
 	}
 
 	req.DocNo = strings.TrimSpace(req.DocNo)
@@ -409,6 +458,9 @@ func previewSaleInvoiceVoid(ctx context.Context, pool txBeginner, saleDocNo stri
 	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
 		return saleInvoiceCancelPreview{}, fmt.Errorf("set repeatable-read isolation: %w", err)
 	}
+	if err := acquireCancellationSourceLock(ctx, tx, models.TransFlagSaleInvoice, saleDocNo); err != nil {
+		return saleInvoiceCancelPreview{}, err
+	}
 	return buildSaleInvoiceVoidPreview(ctx, tx, saleDocNo, req, false)
 }
 
@@ -420,6 +472,9 @@ func createSaleInvoiceVoid(ctx context.Context, pool txBeginner, saleDocNo strin
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
 		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("set repeatable-read isolation: %w", err)
+	}
+	if err := acquireCancellationSourceLock(ctx, tx, models.TransFlagSaleInvoice, saleDocNo); err != nil {
+		return saleInvoiceCancelPreview{}, 0, err
 	}
 
 	req.DocNo = strings.TrimSpace(req.DocNo)
@@ -499,6 +554,11 @@ func buildSaleInvoiceVoidPreview(ctx context.Context, tx pgx.Tx, saleDocNo strin
 			Message:             "sale invoice cancellation already exists for this sale invoice",
 		}, nil
 	}
+	if other, err := existingCreditNoteForSale(ctx, tx, saleDocNo, false); err != nil {
+		return saleInvoiceCancelPreview{}, err
+	} else if other != "" {
+		return saleInvoiceCancelPreview{}, conflictingCancellationError(saleDocNo, other, models.TransFlagCreditNote)
+	}
 	src, err := loadSaleInvoiceForCancel(ctx, tx, saleDocNo, lock)
 	if err != nil {
 		return saleInvoiceCancelPreview{}, err
@@ -577,6 +637,11 @@ func buildSaleInvoiceCancelPreview(ctx context.Context, tx pgx.Tx, saleDocNo str
 			Message:             "credit note already exists for this sale invoice",
 		}, nil
 	}
+	if other, err := existingSaleInvoiceVoid(ctx, tx, saleDocNo, false); err != nil {
+		return saleInvoiceCancelPreview{}, err
+	} else if other != "" {
+		return saleInvoiceCancelPreview{}, conflictingCancellationError(saleDocNo, other, models.TransFlagSaleInvoiceCancel)
+	}
 	src, err := loadSaleInvoiceForCancel(ctx, tx, saleDocNo, lock)
 	if err != nil {
 		return saleInvoiceCancelPreview{}, err
@@ -622,6 +687,19 @@ func buildSaleInvoiceCancelPreview(ctx context.Context, tx pgx.Tx, saleDocNo str
 		})
 	}
 	return out, nil
+}
+
+func conflictingCancellationError(sourceDocNo, existingDocNo string, destinationTransFlag int) error {
+	return newAppError(
+		http.StatusConflict,
+		"source_already_cancelled_externally",
+		"source sale invoice already has a different cancellation document",
+		gin.H{
+			"source_doc_no":          strings.TrimSpace(sourceDocNo),
+			"existing_cancel_doc_no": strings.TrimSpace(existingDocNo),
+			"destination_trans_flag": destinationTransFlag,
+		},
+	)
 }
 
 func existingCreditNoteForSale(ctx context.Context, tx pgx.Tx, saleDocNo string, lock bool) (string, error) {

@@ -124,6 +124,8 @@ func main() {
 	v1.GET("/capabilities", cw.Capabilities)
 	v1.GET("/ic/document-profile-capabilities", cw.DocumentProfileCapabilities)
 	v1.POST("/ic/sale-orders", cw.CreateSaleOrder)
+	v1.POST("/ic/sale-orders/:doc_no/void/preview", cw.PreviewSaleOrderVoid)
+	v1.POST("/ic/sale-orders/:doc_no/void", cw.CreateSaleOrderVoid)
 	v1.POST("/ic/sale-invoices", cw.CreateSaleInvoice)
 	v1.POST("/ic/sale-invoices/:doc_no/void/preview", cw.PreviewSaleInvoiceVoid)
 	v1.POST("/ic/sale-invoices/:doc_no/void", cw.CreateSaleInvoiceVoid)

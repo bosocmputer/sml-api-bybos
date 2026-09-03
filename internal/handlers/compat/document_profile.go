@@ -33,7 +33,7 @@ func normalizeAndValidateProfile(p *docPayload, items []docItem, route docRoute)
 	if p.DocumentProfileVersion == "" {
 		return nil
 	}
-	if route.name != routeSaleInvoice.name && route.name != routeSaleOrder.name {
+	if route.name != routeSaleInvoice.name && route.name != routeSaleOrder.name && route.name != routeSaleOrderCancel.name {
 		return fmt.Errorf("document_profile_version is not supported for route %s", route.name)
 	}
 	p.CreatorCode = strings.TrimSpace(p.CreatorCode)
@@ -505,6 +505,26 @@ func validateStoredProfileHash(stored, requested, docNo string) error {
 func buildMainLogData1(p docPayload, route docRoute) string {
 	docDate, _ := time.Parse("2006-01-02", p.DocDate)
 	thaiDate := fmt.Sprintf("%d/%d/%d", docDate.Day(), int(docDate.Month()), docDate.Year()+543)
+	if route.name == routeSaleOrderCancel.name {
+		refDate := docDate
+		if parsed, err := time.Parse("2006-01-02", p.DocRefDate); err == nil {
+			refDate = parsed
+		}
+		thaiRefDate := fmt.Sprintf("%d/%d/%d", refDate.Day(), int(refDate.Month()), refDate.Year()+543)
+		xml := `<?xml version="1.0" encoding="utf-8"?><top>` +
+			`<d t=2 f=doc_date>` + thaiDate + `</d>` +
+			`<d t=1 f=doc_time>` + html.EscapeString(p.DocTime) + `</d>` +
+			`<d t=1 f=cust_code>` + html.EscapeString(p.CustCode) + `</d>` +
+			`<d t=2 f=doc_ref_date>` + thaiRefDate + `</d>` +
+			`<d t=1 f=doc_no>` + html.EscapeString(p.DocNo) + `</d>` +
+			`<d t=1 f=doc_format_code>` + html.EscapeString(p.DocFormatCode) + `</d>` +
+			`<d t=1 f=doc_ref>` + html.EscapeString(p.DocRef) + `</d>` +
+			`<d t=1 f=user_approve>` + html.EscapeString(p.CreatorCode) + `</d>` +
+			`<d t=5 f=vat_type>` + strconv.Itoa(p.VATType) + `</d>` +
+			`<d t=1 f=user_request>` + html.EscapeString(p.UserRequest) + `</d>` +
+			`<d t=6 f=cancel_type>2</d></top>`
+		return html.EscapeString(xml)
+	}
 	xml := `<?xml version="1.0" encoding="utf-8"?><top>` +
 		`<d t=2 f=doc_date>` + thaiDate + `</d>` +
 		`<d t=1 f=doc_time>` + html.EscapeString(p.DocTime) + `</d>` +
@@ -647,6 +667,36 @@ func buildERPLogDataNew(p docPayload, route docRoute) ([]byte, error) {
 				"doc_format_code": p.DocFormatCode, "doc_no": p.DocNo, "doc_ref": p.DocRef,
 				"doc_ref_date": p.DocRefDate, "doc_time": p.DocTime, "inquiry_type": p.InquiryType,
 				"sale_code": p.SaleCode, "sale_group": "", "vat_type": p.VATType,
+			},
+		}
+	}
+	if route.name == routeSaleOrderCancel.name {
+		for i, detail := range details {
+			delete(detail, "date_expire")
+			delete(detail, "hidden_cost_1")
+			detail["ref_doc_no"] = items[i].RefDocNo
+			detail["ref_row"] = items[i].RefLineNumber
+			detail["doc_ref_type"] = items[i].DocRefType
+		}
+		data = map[string]any{
+			"screenbottom": map[string]any{
+				"remark_2": p.Remark2, "remark_3": "", "remark_4": "", "remark_5": p.Remark5,
+			},
+			"screendetail": details,
+			"screenmore": map[string]any{
+				"credit_date": p.DocDate, "credit_day": 0, "discount_word": headerDiscountWord(p.TotalDiscount),
+				"expire_date": p.DocDate, "expire_day": 0, "remark": p.Remark, "send_date": p.DocDate,
+				"send_day": 0, "send_type": 0, "total_after_vat": p.TotalAfterVATDecimal,
+				"total_amount": p.TotalAmountDecimal, "total_before_vat": p.TotalBeforeVATDecimal,
+				"total_discount": p.TotalDiscountDecimal, "total_except_vat": p.TotalExceptVATDecimal,
+				"total_value": p.TotalValueDecimal, "total_vat_value": p.TotalVATValueDecimal,
+				"vat_rate": p.VATRateDecimal,
+			},
+			"screentop": map[string]any{
+				"cancel_type": 2, "cust_code": p.CustCode, "doc_date": p.DocDate,
+				"doc_format_code": p.DocFormatCode, "doc_no": p.DocNo, "doc_ref": p.DocRef,
+				"doc_ref_date": p.DocRefDate, "doc_time": p.DocTime, "user_approve": p.CreatorCode,
+				"user_request": p.UserRequest, "vat_type": p.VATType,
 			},
 		}
 	}

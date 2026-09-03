@@ -8,6 +8,7 @@ const (
 	TransFlagQuotation         = 30
 	TransFlagSaleReserve       = 34
 	TransFlagSaleOrder         = 36
+	TransFlagSaleOrderCancel   = 37
 	TransFlagSaleInvoice       = 44
 	TransFlagSaleInvoiceCancel = 45
 	TransFlagCreditNote        = 48
@@ -36,6 +37,7 @@ var transFlagMeta = map[int]int{
 	TransFlagQuotation:         TransTypeSale,
 	TransFlagSaleReserve:       TransTypeSale,
 	TransFlagSaleOrder:         TransTypeSale,
+	TransFlagSaleOrderCancel:   TransTypeSale,
 	TransFlagSaleInvoice:       TransTypeSale,
 	TransFlagSaleInvoiceCancel: TransTypeSale,
 	TransFlagCreditNote:        TransTypeSale,
