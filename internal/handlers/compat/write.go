@@ -26,10 +26,12 @@ import (
 )
 
 const (
-	documentProfileV1       = "sml-document-v1"
-	maxDocumentRequestBytes = int64(2 << 20)
-	maxDocumentItems        = 500
-	maxProfileTextRunes     = 255
+	documentProfileV1             = "sml-document-v1"
+	salesProfileContractRevision  = "sml-sales-document-profile-v2-20260903"
+	maxDocumentRequestBytes       = int64(2 << 20)
+	maxDocumentItems              = 500
+	maxProfileTextRunes           = 255
+	sourceDocumentLockWaitSeconds = 3
 )
 
 type WriteHandler struct {
@@ -271,12 +273,40 @@ func (h *WriteHandler) CreatePurchaseOrder(c *gin.Context) {
 func (h *WriteHandler) DocumentProfileCapabilities(c *gin.Context) {
 	api.OK(c, gin.H{
 		"capability":          "sml_document_profile",
+		"contract_revision":   salesProfileContractRevision,
 		"versions":            []string{documentProfileV1},
+		"routes":              salesDocumentProfileRoutes(),
 		"max_request_bytes":   maxDocumentRequestBytes,
 		"max_items":           maxDocumentItems,
 		"max_text_characters": maxProfileTextRunes,
 		"profile_statuses":    []string{"pending", "complete", "needs_reconciliation", "terminal_failure"},
 		"correlation_header":  middleware.CorrelationIDHeader,
+	})
+}
+
+func salesDocumentProfileRoutes() []string {
+	return []string{"creditnote", "saleinvoice", "saleinvoicecancel", "saleorder", "saleordercancel"}
+}
+
+// Capabilities is the single handshake used by Nexflow before Preview or
+// automation Enable. It is intentionally tenant-independent: authentication
+// still selects the tenant database on each document request.
+func (h *WriteHandler) Capabilities(c *gin.Context) {
+	api.OK(c, gin.H{
+		"contract_revision": salesProfileContractRevision,
+		"document_profile": gin.H{
+			"versions":            []string{documentProfileV1},
+			"routes":              salesDocumentProfileRoutes(),
+			"max_request_bytes":   maxDocumentRequestBytes,
+			"max_input_items":     maxDocumentItems,
+			"max_expanded_items":  maxDocumentItems,
+			"max_text_characters": maxProfileTextRunes,
+		},
+		"cancellation": gin.H{
+			"full_document_only":       true,
+			"source_lock_wait_seconds": sourceDocumentLockWaitSeconds,
+		},
+		"correlation_header": middleware.CorrelationIDHeader,
 	})
 }
 

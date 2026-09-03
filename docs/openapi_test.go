@@ -18,6 +18,7 @@ func TestOpenAPISpecIsValidAndBillFlowNative(t *testing.T) {
 
 	paths := spec["paths"].(map[string]any)
 	for _, path := range []string{
+		"/api/v1/capabilities",
 		"/api/v1/ar/customers",
 		"/api/v1/ar/receipt-candidates",
 		"/api/v1/ar/receipts",
@@ -78,6 +79,9 @@ func TestOpenAPISpecIsValidAndBillFlowNative(t *testing.T) {
 		if _, ok := schemas[schema]; !ok {
 			t.Fatalf("required schema missing from OpenAPI spec: %s", schema)
 		}
+	}
+	if _, ok := schemas["GatewayCapabilitiesResponse"]; !ok {
+		t.Fatal("GatewayCapabilitiesResponse missing")
 	}
 
 	docCreated := schemas["DocCreatedResponse"].(map[string]any)

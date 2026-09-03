@@ -1432,6 +1432,44 @@
           }
         }
       },
+      "GatewayCapabilitiesResponse": {
+        "type": "object",
+        "required": ["success", "data"],
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "object",
+            "required": ["contract_revision", "document_profile", "cancellation", "correlation_header"],
+            "properties": {
+              "contract_revision": {"type": "string", "enum": ["sml-sales-document-profile-v2-20260903"]},
+              "document_profile": {
+                "type": "object",
+                "required": ["versions", "routes", "max_request_bytes", "max_input_items", "max_expanded_items", "max_text_characters"],
+                "properties": {
+                  "versions": {"type": "array", "items": {"type": "string", "enum": ["sml-document-v1"]}},
+                  "routes": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["saleorder", "saleinvoice", "saleordercancel", "saleinvoicecancel", "creditnote"]}
+                  },
+                  "max_request_bytes": {"type": "integer", "enum": [2097152]},
+                  "max_input_items": {"type": "integer", "enum": [500]},
+                  "max_expanded_items": {"type": "integer", "enum": [500]},
+                  "max_text_characters": {"type": "integer", "enum": [255]}
+                }
+              },
+              "cancellation": {
+                "type": "object",
+                "required": ["full_document_only", "source_lock_wait_seconds"],
+                "properties": {
+                  "full_document_only": {"type": "boolean", "enum": [true]},
+                  "source_lock_wait_seconds": {"type": "integer", "enum": [3]}
+                }
+              },
+              "correlation_header": {"type": "string", "enum": ["X-Correlation-ID"]}
+            }
+          }
+        }
+      },
       "SaleOrderRequest": {
         "type": "object",
         "required": [
@@ -3937,6 +3975,22 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/capabilities": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Read the Gateway contract revision, Profile routes and hard limits",
+        "responses": {
+          "200": {
+            "description": "gateway capabilities available",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/GatewayCapabilitiesResponse"}
               }
             }
           }

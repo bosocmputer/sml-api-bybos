@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -42,6 +43,51 @@ func TestDocumentProfileCapabilityIsExplicitAndVersioned(t *testing.T) {
 	}
 	if response.Data.CorrelationHeader != "X-Correlation-ID" {
 		t.Fatalf("unexpected correlation header: %+v", response.Data)
+	}
+}
+
+func TestGatewayCapabilitiesAdvertiseEverySalesProfileRouteAndRevision(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	NewWriteHandler(nil, nil).Capabilities(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			ContractRevision string `json:"contract_revision"`
+			DocumentProfile  struct {
+				Versions         []string `json:"versions"`
+				Routes           []string `json:"routes"`
+				MaxRequestBytes  int64    `json:"max_request_bytes"`
+				MaxInputItems    int      `json:"max_input_items"`
+				MaxExpandedItems int      `json:"max_expanded_items"`
+			} `json:"document_profile"`
+			Cancellation struct {
+				FullDocumentOnly      bool `json:"full_document_only"`
+				SourceLockWaitSeconds int  `json:"source_lock_wait_seconds"`
+			} `json:"cancellation"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Data.ContractRevision != salesProfileContractRevision {
+		t.Fatalf("contract revision=%q", response.Data.ContractRevision)
+	}
+	wantRoutes := []string{"creditnote", "saleinvoice", "saleinvoicecancel", "saleorder", "saleordercancel"}
+	if !reflect.DeepEqual(response.Data.DocumentProfile.Routes, wantRoutes) {
+		t.Fatalf("routes=%v want=%v", response.Data.DocumentProfile.Routes, wantRoutes)
+	}
+	if !reflect.DeepEqual(response.Data.DocumentProfile.Versions, []string{documentProfileV1}) ||
+		response.Data.DocumentProfile.MaxRequestBytes != maxDocumentRequestBytes ||
+		response.Data.DocumentProfile.MaxInputItems != maxDocumentItems ||
+		response.Data.DocumentProfile.MaxExpandedItems != maxDocumentItems {
+		t.Fatalf("document profile capability=%+v", response.Data.DocumentProfile)
+	}
+	if !response.Data.Cancellation.FullDocumentOnly || response.Data.Cancellation.SourceLockWaitSeconds != sourceDocumentLockWaitSeconds {
+		t.Fatalf("cancellation capability=%+v", response.Data.Cancellation)
 	}
 }
 
