@@ -23,6 +23,12 @@ import (
 
 var exactDecimalPattern = regexp.MustCompile(`^(0|[1-9][0-9]{0,15})(\.[0-9]{1,6})?$`)
 
+const smlSaleVATRegisterType = 0
+
+func smlVATEffectivePeriod(docDate time.Time) (int, int) {
+	return int(docDate.Month()), docDate.Year() + 543
+}
+
 func normalizeAndValidateProfile(p *docPayload, items []docItem, route docRoute) error {
 	if p.DocumentProfileVersion == "" {
 		return nil
@@ -320,17 +326,20 @@ func writeProfileRelations(ctx context.Context, tx pgx.Tx, p docPayload, route d
 	rows := 0
 	docDate, _ := time.Parse("2006-01-02", p.DocDate)
 	if p.VATRate > 0 && (p.VATType == 1 || p.VATType == 2) {
+		vatEffectivePeriod, vatEffectiveYear := smlVATEffectivePeriod(docDate)
 		tag, err := tx.Exec(ctx, `INSERT INTO gl_journal_vat_sale (
 			doc_date,doc_no,line_number,vat_number,base_caltax_amount,tax_rate,amount,
-			vat_date,trans_type,trans_flag,ar_code,vat_calc,branch_code,vat_type
-		) SELECT $1,$2,0,$3,$4,$5,$6,$7,$8,$9,$10,1,$11,$12
+			vat_date,trans_type,trans_flag,ar_code,vat_calc,vat_effective_period,vat_effective_year,
+			branch_code,vat_type
+		) SELECT $1,$2,0,$3,$4,$5,$6,$7,$8,$9,$10,1,$11,$12,$13,$14
 		WHERE NOT EXISTS (
 			SELECT 1 FROM gl_journal_vat_sale
-			 WHERE doc_no=$13 AND trans_flag=$14 AND line_number=0
+			 WHERE doc_no=$15 AND trans_flag=$16 AND line_number=0
 		)`,
 			docDate, p.DocNo, p.DocNo, p.TotalBeforeVATDecimal, p.VATRateDecimal,
 			p.TotalVATValueDecimal, docDate, route.transType, route.transFlag, p.CustCode,
-			p.BranchCode, p.VATType, p.DocNo, route.transFlag)
+			vatEffectivePeriod, vatEffectiveYear, p.BranchCode, smlSaleVATRegisterType,
+			p.DocNo, route.transFlag)
 		if err != nil {
 			return rows, fmt.Errorf("insert VAT profile: %w", err)
 		}
@@ -461,6 +470,11 @@ func ensurePreparedProfileDecimals(items []preparedDocItem) {
 }
 
 func buildERPLogDataNew(p docPayload) ([]byte, error) {
+	docDate, err := time.Parse("2006-01-02", p.DocDate)
+	if err != nil {
+		return nil, fmt.Errorf("parse doc_date for SML VAT audit: %w", err)
+	}
+	vatEffectivePeriod, vatEffectiveYear := smlVATEffectivePeriod(docDate)
 	details := make([]map[string]any, 0, len(p.Details))
 	for _, item := range p.Details {
 		details = append(details, map[string]any{
@@ -498,8 +512,8 @@ func buildERPLogDataNew(p docPayload) ([]byte, error) {
 			"branch_code": p.BranchCode, "branch_type": 0, "description": "", "except_tax_amount": "0",
 			"is_add": 0, "line_number": 0, "manual_add": 0, "ref_doc_date": nil, "ref_doc_no": "",
 			"ref_vat_date": nil, "ref_vat_no": "", "tax_group": "", "tax_no": "",
-			"tax_rate": p.VATRateDecimal, "vat_date": p.DocDate, "vat_effective_period": 0,
-			"vat_effective_year": 0, "vat_number": p.DocNo, "vat_type": p.VATType,
+			"tax_rate": p.VATRateDecimal, "vat_date": p.DocDate, "vat_effective_period": vatEffectivePeriod,
+			"vat_effective_year": vatEffectiveYear, "vat_number": p.DocNo, "vat_type": smlSaleVATRegisterType,
 		})
 	}
 	data := map[string]any{

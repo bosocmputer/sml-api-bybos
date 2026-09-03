@@ -272,15 +272,23 @@ func TestProfileRelationsWriteVATShipmentAndMainLogInCallerTransaction(t *testin
 		}
 	}
 	vatCall := tx.execCalls[0]
-	if len(vatCall.args) != 14 {
-		t.Fatalf("VAT profile args=%d, want 14 so INSERT and NOT EXISTS use independent PostgreSQL parameters", len(vatCall.args))
+	if len(vatCall.args) != 16 {
+		t.Fatalf("VAT profile args=%d, want 16 so VAT metadata and document identity use independent PostgreSQL parameters", len(vatCall.args))
 	}
 	if vatCall.args[1] != p.DocNo || vatCall.args[2] != p.DocNo {
 		t.Fatalf("VAT doc identity args=%#v, want independent doc_no/vat_number values", vatCall.args[:3])
 	}
-	if !strings.Contains(vatCall.sql, "SELECT $1,$2,0,$3,$4,$5,$6,$7,$8,$9,$10,1,$11,$12") ||
-		!strings.Contains(vatCall.sql, "doc_no=$13 AND trans_flag=$14") {
-		t.Fatal("VAT profile must use independent PostgreSQL parameters for every INSERT and NOT EXISTS context")
+	if fmt.Sprint(vatCall.args[10]) != "9" || fmt.Sprint(vatCall.args[11]) != "2569" {
+		t.Fatalf("VAT effective period/year args=%#v, want September 2569", vatCall.args[10:12])
+	}
+	if fmt.Sprint(vatCall.args[13]) != "0" {
+		t.Fatalf("VAT sale-register type arg=%#v, want 0 independent from the header VAT mode", vatCall.args[13])
+	}
+	if !strings.Contains(vatCall.sql, "vat_effective_period,vat_effective_year") ||
+		!strings.Contains(vatCall.sql, "branch_code,vat_type") ||
+		!strings.Contains(vatCall.sql, "$10,1,$11,$12,$13,$14") ||
+		!strings.Contains(vatCall.sql, "doc_no=$15 AND trans_flag=$16") {
+		t.Fatal("VAT profile must persist Buddhist effective period/year, keep the sale-register type independent, and separate NOT EXISTS parameters")
 	}
 	shipmentCall := tx.execCalls[1]
 	if len(shipmentCall.args) != 11 || !strings.Contains(shipmentCall.sql, "doc_no=$10 AND trans_flag=$11") {
@@ -316,6 +324,42 @@ func TestProfileERPLogDataNewHasFrozenSMLSections(t *testing.T) {
 		if _, ok := data[section]; !ok {
 			t.Fatalf("data_new missing section %s", section)
 		}
+	}
+	var vatRows []struct {
+		VATEffectivePeriod int `json:"vat_effective_period"`
+		VATEffectiveYear   int `json:"vat_effective_year"`
+		VATType            int `json:"vat_type"`
+	}
+	if err := json.Unmarshal(data["screenvatsale"], &vatRows); err != nil {
+		t.Fatal(err)
+	}
+	if len(vatRows) != 1 || vatRows[0].VATEffectivePeriod != 9 || vatRows[0].VATEffectiveYear != 2569 || vatRows[0].VATType != 0 {
+		t.Fatalf("screenvatsale=%+v, want effective period 9/year 2569 and sale-register vat_type 0", vatRows)
+	}
+	var top struct {
+		VATType int `json:"vat_type"`
+	}
+	if err := json.Unmarshal(data["screentop"], &top); err != nil {
+		t.Fatal(err)
+	}
+	if top.VATType != 1 {
+		t.Fatalf("screentop vat_type=%d, want route-controlled header vat_type 1", top.VATType)
+	}
+}
+
+func TestProfileVATEffectivePeriodRollsOverToNextBuddhistYear(t *testing.T) {
+	p := profilePayloadForTest()
+	p.DocDate = "2027-01-01"
+	if err := normalizeAndValidate(&p, p.Details, routeSaleInvoice); err != nil {
+		t.Fatal(err)
+	}
+	tx := &docRefFakeTx{}
+	if _, err := writeProfileRelations(context.Background(), tx, p, routeSaleInvoice, strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+	vatCall := tx.execCalls[0]
+	if fmt.Sprint(vatCall.args[10]) != "1" || fmt.Sprint(vatCall.args[11]) != "2570" {
+		t.Fatalf("VAT effective period/year args=%#v, want January 2570", vatCall.args[10:12])
 	}
 }
 

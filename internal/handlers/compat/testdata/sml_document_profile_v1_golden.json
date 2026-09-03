@@ -58,7 +58,10 @@
       "tax_rate_exact": "7.00",
       "amount_exact": "19.63",
       "trans_type": 2,
-      "trans_flag": 44
+      "trans_flag": 44,
+      "vat_effective_period": 5,
+      "vat_effective_year": 2569,
+      "vat_type": 0
     }
   ],
   "shipment": {
