@@ -3,6 +3,7 @@ package compat
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -309,6 +310,7 @@ func (h *WriteHandler) Capabilities(c *gin.Context) {
 			"max_request_bytes":   maxDocumentRequestBytes,
 			"max_input_items":     maxDocumentItems,
 			"max_expanded_items":  maxDocumentItems,
+			"max_expanded_bytes":  maxDocumentRequestBytes,
 			"max_text_characters": maxProfileTextRunes,
 		},
 		"cancellation": gin.H{
@@ -375,8 +377,8 @@ func (h *WriteHandler) createDocument(c *gin.Context, route docRoute) {
 	var p docPayload
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxDocumentRequestBytes)
 	if err := c.ShouldBindJSON(&p); err != nil {
-		api.BadRequest(c, "invalid_json", "invalid request body", err.Error())
-		h.logWrite(c, route, p.DocNo, 0, start, "invalid_json")
+		code := writeDocumentJSONError(c, "invalid request body", err)
+		h.logWrite(c, route, p.DocNo, 0, start, code)
 		return
 	}
 	items := p.Items
@@ -825,8 +827,8 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 		return 0, false, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
-		return 0, false, fmt.Errorf("set repeatable-read isolation: %w", err)
+	if err := configureDocumentTransaction(ctx, tx); err != nil {
+		return 0, false, err
 	}
 
 	exists, err := docExists(ctx, tx, p.DocNo, route.transFlag)
@@ -870,6 +872,9 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 	}
 	if p.DocumentProfileVersion == documentProfileV1 {
 		ensurePreparedProfileDecimals(preparedItems)
+	}
+	if err := validateExpandedDocumentSize(p, preparedItems); err != nil {
+		return 0, false, err
 	}
 
 	docDate, _ := time.Parse("2006-01-02", p.DocDate)
@@ -944,6 +949,7 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 	}
 	rowsWritten := 1
 
+	var detailBatch pgx.Batch
 	for i, prepared := range preparedItems {
 		it := prepared.docItem
 		lineNo := it.LineNumber
@@ -978,7 +984,7 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 
 		calcFlag := documentDetailCalcFlag(route)
 
-		_, err = tx.Exec(ctx, `
+		detailBatch.Queue(`
 			INSERT INTO ic_trans_detail (
 				trans_type, trans_flag, doc_date, doc_no, line_number,
 				cust_code, doc_time, calc_flag, inquiry_type,
@@ -1023,10 +1029,18 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 			prepared.ItemType, prepared.RefGUID, prepared.SetRefPrice, prepared.SetRefQty,
 			prepared.ItemCodeMain, prepared.SetRefLine, prepared.PriceSetRatio,
 		)
-		if err != nil {
-			return rowsWritten, false, fmt.Errorf("insert item %d: %w", i, err)
+	}
+	detailResults := tx.SendBatch(ctx, &detailBatch)
+	for i := range preparedItems {
+		tag, execErr := detailResults.Exec()
+		if execErr != nil {
+			_ = detailResults.Close()
+			return rowsWritten, false, fmt.Errorf("insert item %d: %w", i, execErr)
 		}
-		rowsWritten++
+		rowsWritten += int(tag.RowsAffected())
+	}
+	if err := detailResults.Close(); err != nil {
+		return rowsWritten, false, fmt.Errorf("close detail insert batch: %w", err)
 	}
 
 	if err := normalizeInsertedDocument(ctx, tx, p.DocNo, route.transFlag); err != nil {
@@ -1044,6 +1058,47 @@ func (h *WriteHandler) insertDocument(ctx context.Context, pool txBeginner, tena
 	}
 	h.logSetExpansion(tenant, p.DocNo, items, products)
 	return rowsWritten, false, nil
+}
+
+func configureDocumentTransaction(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
+		return fmt.Errorf("set repeatable-read isolation: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = '20s'`); err != nil {
+		return fmt.Errorf("set document statement timeout: %w", err)
+	}
+	return nil
+}
+
+func writeDocumentJSONError(c *gin.Context, message string, err error) string {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		api.Error(c, http.StatusRequestEntityTooLarge, "request_too_large", message+" exceeds 2 MiB", gin.H{
+			"max_request_bytes": maxDocumentRequestBytes,
+		})
+		return "request_too_large"
+	}
+	api.BadRequest(c, "invalid_json", message, nil)
+	return "invalid_json"
+}
+
+func validateExpandedDocumentSize(p docPayload, items []preparedDocItem) error {
+	document := p
+	document.Items = nil
+	document.Details = nil
+	body, err := json.Marshal(struct {
+		Document docPayload        `json:"document"`
+		Items    []preparedDocItem `json:"items"`
+	}{Document: document, Items: items})
+	if err != nil {
+		return fmt.Errorf("marshal expanded document for limit validation: %w", err)
+	}
+	if int64(len(body)) > maxDocumentRequestBytes {
+		return newAppError(http.StatusRequestEntityTooLarge, "expanded_payload_too_large",
+			fmt.Sprintf("set-product expansion produced %d bytes; maximum is %d", len(body), maxDocumentRequestBytes),
+			gin.H{"expanded_bytes": len(body), "max_expanded_bytes": maxDocumentRequestBytes})
+	}
+	return nil
 }
 
 func profileHeaderTaxDocument(route docRoute, p docPayload, docDate time.Time) (string, any) {

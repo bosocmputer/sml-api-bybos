@@ -53,7 +53,7 @@ func (h *WriteHandler) handleSaleOrderVoid(c *gin.Context, previewOnly bool) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxDocumentRequestBytes)
 	var req saleInvoiceCancelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.BadRequest(c, "invalid_json", "invalid sale-order cancellation payload", err.Error())
+		writeDocumentJSONError(c, "invalid sale-order cancellation payload", err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
@@ -109,8 +109,8 @@ func executeSaleOrderVoid(ctx context.Context, pool txBeginner, tenant, sourceDo
 		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
-		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("set repeatable-read isolation: %w", err)
+	if err := configureDocumentTransaction(ctx, tx); err != nil {
+		return saleInvoiceCancelPreview{}, 0, err
 	}
 	if err := acquireCancellationSourceLock(ctx, tx, models.TransFlagSaleOrder, sourceDocNo); err != nil {
 		return saleInvoiceCancelPreview{}, 0, err
@@ -427,12 +427,21 @@ func insertSaleOrderCancelCore(ctx context.Context, tx pgx.Tx, src saleOrderForC
 		return 0, fmt.Errorf("insert SSC header: %w", err)
 	}
 	rowsWritten := 1
+	var detailBatch pgx.Batch
 	for _, line := range src.Items {
-		_, err := tx.Exec(ctx, `INSERT INTO ic_trans_detail (trans_type,trans_flag,doc_date,doc_no,line_number,cust_code,doc_time,calc_flag,inquiry_type,item_code,item_name,unit_code,is_permium,is_get_price,wh_code,shelf_code,wh_code_2,shelf_code_2,qty,price,price_exclude_vat,discount_amount,discount,total_vat_value,sum_amount,sum_amount_exclude_vat,tax_type,vat_type,ref_doc_no,ref_line_number,doc_ref_type,branch_code,last_status) VALUES ($1,$2,$3,$4,$5,$6,$7,-1,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,0,$30,0)`, models.TransTypeSale, models.TransFlagSaleOrderCancel, docDate, p.DocNo, line.LineNumber, src.CustCode, p.DocTime, src.InquiryType, line.ItemCode, line.ItemName, line.UnitCode, line.IsPremium, line.IsGetPrice, line.WHCode, line.ShelfCode, line.WHCode2, line.ShelfCode2, line.Qty, line.Price, line.PriceExcludeVAT, line.DiscountAmount, line.Discount, line.TotalVATValue, line.SumAmount, line.SumAmountExcludeVAT, line.TaxType, line.VATType, src.DocNo, line.LineNumber, line.BranchCode)
-		if err != nil {
-			return rowsWritten, fmt.Errorf("insert SSC detail %d: %w", line.LineNumber, err)
+		detailBatch.Queue(`INSERT INTO ic_trans_detail (trans_type,trans_flag,doc_date,doc_no,line_number,cust_code,doc_time,calc_flag,inquiry_type,item_code,item_name,unit_code,is_permium,is_get_price,wh_code,shelf_code,wh_code_2,shelf_code_2,qty,price,price_exclude_vat,discount_amount,discount,total_vat_value,sum_amount,sum_amount_exclude_vat,tax_type,vat_type,ref_doc_no,ref_line_number,doc_ref_type,branch_code,last_status) VALUES ($1,$2,$3,$4,$5,$6,$7,-1,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,0,$30,0)`, models.TransTypeSale, models.TransFlagSaleOrderCancel, docDate, p.DocNo, line.LineNumber, src.CustCode, p.DocTime, src.InquiryType, line.ItemCode, line.ItemName, line.UnitCode, line.IsPremium, line.IsGetPrice, line.WHCode, line.ShelfCode, line.WHCode2, line.ShelfCode2, line.Qty, line.Price, line.PriceExcludeVAT, line.DiscountAmount, line.Discount, line.TotalVATValue, line.SumAmount, line.SumAmountExcludeVAT, line.TaxType, line.VATType, src.DocNo, line.LineNumber, line.BranchCode)
+	}
+	detailResults := tx.SendBatch(ctx, &detailBatch)
+	for _, line := range src.Items {
+		tag, execErr := detailResults.Exec()
+		if execErr != nil {
+			_ = detailResults.Close()
+			return rowsWritten, fmt.Errorf("insert SSC detail %d: %w", line.LineNumber, execErr)
 		}
-		rowsWritten++
+		rowsWritten += int(tag.RowsAffected())
+	}
+	if err := detailResults.Close(); err != nil {
+		return rowsWritten, fmt.Errorf("close SSC detail insert batch: %w", err)
 	}
 	return rowsWritten, nil
 }

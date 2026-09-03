@@ -86,6 +86,16 @@ type docRefFakeRow struct {
 	scanOneInt *int
 }
 
+func TestConfigureDocumentTransactionSetsIsolationAndHardTimeout(t *testing.T) {
+	tx := &docRefFakeTx{}
+	if err := configureDocumentTransaction(context.Background(), tx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tx.execCalls) != 2 || tx.execCalls[0].sql != "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ" || tx.execCalls[1].sql != `SET LOCAL statement_timeout = '20s'` {
+		t.Fatalf("transaction guards=%+v", tx.execCalls)
+	}
+}
+
 func (r *docRefFakeRow) Scan(dest ...any) error {
 	if r.err != nil {
 		return r.err

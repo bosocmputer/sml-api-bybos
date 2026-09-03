@@ -344,7 +344,7 @@ func (h *WriteHandler) previewSaleInvoiceCancellation(c *gin.Context, kind saleI
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxDocumentRequestBytes)
 	var req saleInvoiceCancelRequest
 	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
-		api.BadRequest(c, "invalid_json", "invalid cancellation preview payload", err.Error())
+		writeDocumentJSONError(c, "invalid cancellation preview payload", err)
 		return
 	}
 	if err := normalizeCancellationProfileRequest(&req, false); err != nil {
@@ -389,8 +389,8 @@ func (h *WriteHandler) createSaleInvoiceCancellation(c *gin.Context, kind saleIn
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxDocumentRequestBytes)
 	var req saleInvoiceCancelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.BadRequest(c, "invalid_json", "invalid cancellation payload", err.Error())
-		h.logWrite(c, cancellationRoute(kind), "", 0, start, "invalid_json")
+		code := writeDocumentJSONError(c, "invalid cancellation payload", err)
+		h.logWrite(c, cancellationRoute(kind), "", 0, start, code)
 		return
 	}
 	if err := normalizeCancellationProfileRequest(&req, true); err != nil {
@@ -446,8 +446,8 @@ func previewSaleInvoiceCancellation(ctx context.Context, pool txBeginner, tenant
 		return saleInvoiceCancelPreview{}, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
-		return saleInvoiceCancelPreview{}, fmt.Errorf("set repeatable-read isolation: %w", err)
+	if err := configureDocumentTransaction(ctx, tx); err != nil {
+		return saleInvoiceCancelPreview{}, err
 	}
 	if err := acquireCancellationSourceLock(ctx, tx, models.TransFlagSaleInvoice, saleDocNo); err != nil {
 		return saleInvoiceCancelPreview{}, err
@@ -464,8 +464,8 @@ func createSaleInvoiceCancellation(ctx context.Context, pool txBeginner, tenant,
 		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
-		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("set repeatable-read isolation: %w", err)
+	if err := configureDocumentTransaction(ctx, tx); err != nil {
+		return saleInvoiceCancelPreview{}, 0, err
 	}
 	if err := acquireCancellationSourceLock(ctx, tx, models.TransFlagSaleInvoice, saleDocNo); err != nil {
 		return saleInvoiceCancelPreview{}, 0, err
@@ -548,6 +548,7 @@ func createSaleInvoiceCancellation(ctx context.Context, pool txBeginner, tenant,
 	}
 	rowsWritten := 1
 	refGUIDs := make(map[string]string)
+	var detailBatch pgx.Batch
 	for _, it := range src.Items {
 		if it.ItemType != 3 || strings.TrimSpace(it.RefGUID) == "" {
 			continue
@@ -567,7 +568,7 @@ func createSaleInvoiceCancellation(ctx context.Context, pool txBeginner, tenant,
 		if replacement, ok := refGUIDs[it.SetRefLine]; ok {
 			setRefLine = replacement
 		}
-		_, err = tx.Exec(ctx, `
+		detailBatch.Queue(`
 			INSERT INTO ic_trans_detail (
 				trans_type, trans_flag, doc_date, doc_no, line_number,
 				cust_code, doc_time, calc_flag, inquiry_type,
@@ -614,10 +615,18 @@ func createSaleInvoiceCancellation(ctx context.Context, pool txBeginner, tenant,
 			it.ItemType, refGUID, it.SetRefPrice, it.SetRefQty,
 			it.ItemCodeMain, setRefLine, it.PriceSetRatio,
 		)
-		if err != nil {
-			return saleInvoiceCancelPreview{}, rowsWritten, fmt.Errorf("insert credit note item %d: %w", it.LineNumber, err)
+	}
+	detailResults := tx.SendBatch(ctx, &detailBatch)
+	for _, it := range src.Items {
+		tag, execErr := detailResults.Exec()
+		if execErr != nil {
+			_ = detailResults.Close()
+			return saleInvoiceCancelPreview{}, rowsWritten, fmt.Errorf("insert credit note item %d: %w", it.LineNumber, execErr)
 		}
-		rowsWritten++
+		rowsWritten += int(tag.RowsAffected())
+	}
+	if err := detailResults.Close(); err != nil {
+		return saleInvoiceCancelPreview{}, rowsWritten, fmt.Errorf("close credit note detail insert batch: %w", err)
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO ap_ar_trans_detail (
@@ -673,8 +682,8 @@ func previewSaleInvoiceVoid(ctx context.Context, pool txBeginner, tenant, saleDo
 		return saleInvoiceCancelPreview{}, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
-		return saleInvoiceCancelPreview{}, fmt.Errorf("set repeatable-read isolation: %w", err)
+	if err := configureDocumentTransaction(ctx, tx); err != nil {
+		return saleInvoiceCancelPreview{}, err
 	}
 	if err := acquireCancellationSourceLock(ctx, tx, models.TransFlagSaleInvoice, saleDocNo); err != nil {
 		return saleInvoiceCancelPreview{}, err
@@ -688,8 +697,8 @@ func createSaleInvoiceVoid(ctx context.Context, pool txBeginner, tenant, saleDoc
 		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
-		return saleInvoiceCancelPreview{}, 0, fmt.Errorf("set repeatable-read isolation: %w", err)
+	if err := configureDocumentTransaction(ctx, tx); err != nil {
+		return saleInvoiceCancelPreview{}, 0, err
 	}
 	if err := acquireCancellationSourceLock(ctx, tx, models.TransFlagSaleInvoice, saleDocNo); err != nil {
 		return saleInvoiceCancelPreview{}, 0, err

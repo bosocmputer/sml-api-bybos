@@ -14,9 +14,10 @@ type salesProfileGoldenFixture struct {
 	Synthetic        bool   `json:"synthetic"`
 	ContainsBuyerPII bool   `json:"contains_buyer_pii"`
 	Limits           struct {
-		MaxRequestBytes int64 `json:"max_request_bytes"`
-		MaxInputItems   int   `json:"max_input_items"`
-		MaxExpanded     int   `json:"max_expanded_items"`
+		MaxRequestBytes  int64 `json:"max_request_bytes"`
+		MaxInputItems    int   `json:"max_input_items"`
+		MaxExpanded      int   `json:"max_expanded_items"`
+		MaxExpandedBytes int64 `json:"max_expanded_bytes"`
 	} `json:"limits"`
 	Routes []struct {
 		Name               string   `json:"name"`
@@ -62,7 +63,7 @@ func TestSalesDocumentProfileGoldenFixtureIsCompleteAndPIIFree(t *testing.T) {
 	if fixture.ContractRevision == "" || fixture.ProfileVersion != documentProfileV1 || !fixture.Synthetic || fixture.ContainsBuyerPII {
 		t.Fatalf("unsafe or incomplete fixture metadata: %+v", fixture)
 	}
-	if fixture.Limits.MaxRequestBytes != maxDocumentRequestBytes || fixture.Limits.MaxInputItems != maxDocumentItems || fixture.Limits.MaxExpanded != maxDocumentItems {
+	if fixture.Limits.MaxRequestBytes != maxDocumentRequestBytes || fixture.Limits.MaxInputItems != maxDocumentItems || fixture.Limits.MaxExpanded != maxDocumentItems || fixture.Limits.MaxExpandedBytes != maxDocumentRequestBytes {
 		t.Fatalf("fixture limits drifted: %+v", fixture.Limits)
 	}
 

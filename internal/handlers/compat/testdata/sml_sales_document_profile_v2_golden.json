@@ -7,6 +7,7 @@
     "max_request_bytes": 2097152,
     "max_input_items": 500,
     "max_expanded_items": 500,
+    "max_expanded_bytes": 2097152,
     "transaction_timeout_seconds": 20,
     "source_lock_wait_seconds": 3,
     "erp_log_timeout_seconds": 2

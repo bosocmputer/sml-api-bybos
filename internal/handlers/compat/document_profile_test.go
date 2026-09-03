@@ -3,7 +3,9 @@ package compat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/gin-gonic/gin"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -12,9 +14,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"errors"
-	"github.com/gin-gonic/gin"
 )
 
 func TestDocumentProfileCapabilityIsExplicitAndVersioned(t *testing.T) {
@@ -66,6 +65,7 @@ func TestGatewayCapabilitiesAdvertiseEverySalesProfileRouteAndRevision(t *testin
 				MaxRequestBytes  int64    `json:"max_request_bytes"`
 				MaxInputItems    int      `json:"max_input_items"`
 				MaxExpandedItems int      `json:"max_expanded_items"`
+				MaxExpandedBytes int64    `json:"max_expanded_bytes"`
 			} `json:"document_profile"`
 			Cancellation struct {
 				FullDocumentOnly      bool `json:"full_document_only"`
@@ -86,7 +86,8 @@ func TestGatewayCapabilitiesAdvertiseEverySalesProfileRouteAndRevision(t *testin
 	if !reflect.DeepEqual(response.Data.DocumentProfile.Versions, []string{documentProfileV1}) ||
 		response.Data.DocumentProfile.MaxRequestBytes != maxDocumentRequestBytes ||
 		response.Data.DocumentProfile.MaxInputItems != maxDocumentItems ||
-		response.Data.DocumentProfile.MaxExpandedItems != maxDocumentItems {
+		response.Data.DocumentProfile.MaxExpandedItems != maxDocumentItems ||
+		response.Data.DocumentProfile.MaxExpandedBytes != maxDocumentRequestBytes {
 		t.Fatalf("document profile capability=%+v", response.Data.DocumentProfile)
 	}
 	if !response.Data.Cancellation.FullDocumentOnly || response.Data.Cancellation.SourceLockWaitSeconds != sourceDocumentLockWaitSeconds {
@@ -157,8 +158,29 @@ func TestDocumentProfileRejectsOversizedBodyBeforeDatabaseAccess(t *testing.T) {
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	NewWriteHandler(nil, nil).CreateSaleInvoice(ctx)
-	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "invalid_json") {
+	if recorder.Code != http.StatusRequestEntityTooLarge || !strings.Contains(recorder.Body.String(), "request_too_large") {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestExpandedDocumentPayloadLimit(t *testing.T) {
+	payload := profilePayloadForTest()
+	items := []preparedDocItem{{docItem: payload.Details[0]}}
+	if err := validateExpandedDocumentSize(payload, items); err != nil {
+		t.Fatalf("small expanded payload rejected: %v", err)
+	}
+
+	items = make([]preparedDocItem, maxDocumentItems)
+	for i := range items {
+		items[i] = preparedDocItem{docItem: docItem{
+			ItemCode: fmt.Sprintf("ITEM-%03d", i), ItemName: strings.Repeat("สินค้า", 900),
+			UnitCode: "EA", QtyDecimal: "1", PriceDecimal: "1", SumAmountDecimal: "1",
+		}}
+	}
+	err := validateExpandedDocumentSize(payload, items)
+	var appErr *appError
+	if !errors.As(err, &appErr) || appErr.Status != http.StatusRequestEntityTooLarge || appErr.Code != "expanded_payload_too_large" {
+		t.Fatalf("expanded size limit error=%#v", err)
 	}
 }
 
@@ -213,7 +235,7 @@ func TestProfileMainLogEscapesHTMLAsLiteralData(t *testing.T) {
 }
 
 func BenchmarkDocumentProfileNormalizeAndCanonicalHash(b *testing.B) {
-	for _, itemCount := range []int{1, 10, 50, 200} {
+	for _, itemCount := range []int{1, 10, 50, 200, 500} {
 		b.Run(fmt.Sprintf("items_%d", itemCount), func(b *testing.B) {
 			base := profilePayloadForTest()
 			base.VATRate = 0
