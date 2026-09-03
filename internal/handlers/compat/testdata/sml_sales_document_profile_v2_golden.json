@@ -1,0 +1,131 @@
+{
+  "contract_revision": "sml-sales-document-profile-v2-20260903",
+  "profile_version": "sml-document-v1",
+  "synthetic": true,
+  "contains_buyer_pii": false,
+  "limits": {
+    "max_request_bytes": 2097152,
+    "max_input_items": 500,
+    "max_expanded_items": 500,
+    "transaction_timeout_seconds": 20,
+    "source_lock_wait_seconds": 3,
+    "erp_log_timeout_seconds": 2
+  },
+  "routes": [
+    {
+      "name": "saleorder",
+      "path": "/api/v1/ic/sale-orders",
+      "trans_flag": 36,
+      "header_only": false,
+      "detail_calc_flag": 1,
+      "required_relations": ["core", "shipment", "main_log", "erp_log"],
+      "forbidden_relations": ["vat", "ap_ar", "gl"],
+      "source_update": "none",
+      "main_log_screen": 36,
+      "main_log_menu": "menu_so_sale_order",
+      "erp_sections": ["screenbottom", "screendetail", "screenmore", "screenshipment", "screentop"]
+    },
+    {
+      "name": "saleordercancel",
+      "path": "/api/v1/ic/sale-orders/:doc_no/void",
+      "trans_flag": 37,
+      "header_only": false,
+      "detail_calc_flag": -1,
+      "cancel_type": 2,
+      "required_relations": ["core", "main_log", "erp_log"],
+      "forbidden_relations": ["vat", "shipment", "ap_ar", "gl"],
+      "source_update": "saleorder.used_status=1",
+      "main_log_screen": 37,
+      "main_log_menu": "",
+      "erp_sections": ["screenbottom", "screendetail", "screenmore", "screentop"]
+    },
+    {
+      "name": "saleinvoice",
+      "path": "/api/v1/ic/sale-invoices",
+      "trans_flag": 44,
+      "header_only": false,
+      "detail_calc_flag": -1,
+      "required_relations": ["core", "vat", "shipment", "main_log", "erp_log"],
+      "forbidden_relations": ["gl"],
+      "source_update": "none",
+      "main_log_screen": 44,
+      "main_log_menu": "menu_so_invoice",
+      "erp_sections": ["screenbottom", "screendetail", "screengldetail", "screengltop", "screenmore", "screenpay", "screenpaydeposit", "screenshipment", "screentop", "screenvatsale", "screenwithholdingtax"]
+    },
+    {
+      "name": "saleinvoicecancel",
+      "path": "/api/v1/ic/sale-invoices/:doc_no/void",
+      "trans_flag": 45,
+      "header_only": true,
+      "required_relations": ["core", "main_log", "erp_log"],
+      "forbidden_relations": ["detail", "vat", "shipment", "ap_ar", "gl"],
+      "source_update": "saleinvoice.header_and_detail.last_status=1",
+      "main_log_screen": 45,
+      "main_log_menu": "menu_so_invoice_cancel",
+      "erp_sections": ["screenbottom", "screendetail", "screenmore", "screentop"]
+    },
+    {
+      "name": "creditnote",
+      "path": "/api/v1/ic/sale-invoices/:doc_no/cancel",
+      "trans_flag": 48,
+      "header_only": false,
+      "detail_calc_flag": 1,
+      "required_relations": ["core", "vat", "ap_ar", "main_log", "erp_log"],
+      "forbidden_relations": ["shipment", "gl"],
+      "source_update": "saleinvoice.used_status=1",
+      "main_log_screen": 48,
+      "main_log_menu": "menu_so_credit_note",
+      "erp_sections": ["screenbottom", "screendetail", "screengldetail", "screengltop", "screenmore", "screenpay", "screentop", "screenvatsale", "screenwithholdingtax"]
+    }
+  ],
+  "vat_modes": [
+    {
+      "vat_type": 0,
+      "total_value": "300.00",
+      "total_before_vat": "300.00",
+      "total_vat_value": "21.00",
+      "total_after_vat": "321.00",
+      "total_amount": "321.00",
+      "register_required": true,
+      "register_base": "300.00",
+      "register_amount": "21.00",
+      "register_vat_type": 0
+    },
+    {
+      "vat_type": 1,
+      "total_value": "300.00",
+      "total_before_vat": "280.37",
+      "total_vat_value": "19.63",
+      "total_after_vat": "300.00",
+      "total_amount": "300.00",
+      "register_required": true,
+      "register_base": "280.37",
+      "register_amount": "19.63",
+      "register_vat_type": 0
+    },
+    {
+      "vat_type": 2,
+      "total_value": "300.00",
+      "total_before_vat": "0.00",
+      "total_vat_value": "0.00",
+      "total_after_vat": "0.00",
+      "total_amount": "300.00",
+      "register_required": true,
+      "register_base": "0.00",
+      "register_amount": "0.00",
+      "register_vat_type": 0
+    }
+  ],
+  "credit_note": {
+    "detail_calc_flag": 1,
+    "detail_branch_rule": "copy_source_exactly",
+    "ref_amount_authority": "source.total_value",
+    "ref_diff_authority": "source.total_value",
+    "receivable_authority": "source.total_amount",
+    "partial_return_supported": false
+  },
+  "ownership": {
+    "marker_fields": ["remark_5", "creator_code", "cashier_code", "user_request"],
+    "manual_existing_document_policy": "conflict_without_adoption"
+  }
+}
