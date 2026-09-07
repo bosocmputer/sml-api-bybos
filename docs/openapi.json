@@ -457,6 +457,30 @@
                 "example": "บันทึก SML erp_logs ไม่สำเร็จ: ไม่พบฐานข้อมูล aoy_logs",
                 "description": "User-safe warning when erp_logs cannot be written.",
                 "nullable": true
+              },
+              "payload_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$",
+                "description": "Canonical SHA-256 hash returned only for an opt-in Document Profile request."
+              },
+              "core_status": {
+                "type": "string",
+                "enum": ["created", "already_exists"]
+              },
+              "profile_status": {
+                "type": "string",
+                "enum": ["pending", "complete", "needs_reconciliation", "terminal_failure"]
+              },
+              "required_checks": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["core", "vat", "shipment", "main_log", "erp_log"]}
+              },
+              "completed_checks": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["core", "vat", "shipment", "main_log", "erp_log"]}
+              },
+              "reconciliation_required": {
+                "type": "boolean"
               }
             }
           }
@@ -569,7 +593,43 @@
           },
           "shelf_code_2": {
             "type": "string"
+          },
+          "qty_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
+          },
+          "price_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
+          },
+          "price_exclude_vat_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
+          },
+          "discount_amount_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
+          },
+          "sum_amount_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
+          },
+          "vat_amount_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
+          },
+          "sum_amount_exclude_vat_decimal": {
+            "$ref": "#/components/schemas/DocumentProfileDecimal"
           }
+        }
+      },
+      "DocumentProfileDecimal": {
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]{0,15})(\\.[0-9]{1,6})?$",
+        "example": "300.00",
+        "description": "Profile V1 authority value. Base-10 only; no sign, comma, or exponent; at most 6 fractional digits."
+      },
+      "DocumentProfileShipment": {
+        "type": "object",
+        "required": ["transport_name", "transport_address", "transport_telephone"],
+        "properties": {
+          "transport_name": {"type": "string", "minLength": 1, "maxLength": 255},
+          "transport_address": {"type": "string", "minLength": 1, "maxLength": 1000},
+          "transport_telephone": {"type": "string", "minLength": 1, "maxLength": 100}
         }
       },
       "ERPMasterItem": {
@@ -1239,7 +1299,27 @@
           "cust_code",
           "details"
         ],
+        "maxProperties": 100,
         "properties": {
+          "document_profile_version": {
+            "type": "string",
+            "enum": ["sml-document-v1"],
+            "description": "Opt in to Profile V1. Omit this field to preserve legacy behavior."
+          },
+          "marketplace_physical_goods": {
+            "type": "boolean",
+            "description": "When true, a complete shipment is required before any SML core write."
+          },
+          "shipment_applicability": {
+            "type": "string",
+            "enum": ["required", "not_applicable"]
+          },
+          "shipment": {"$ref": "#/components/schemas/DocumentProfileShipment"},
+          "creator_code": {"type": "string", "enum": ["BILLFLOW"]},
+          "cashier_code": {"type": "string", "enum": ["BILLFLOW"]},
+          "user_request": {"type": "string", "enum": ["NEXFLOW"]},
+          "currency_code": {"type": "string", "enum": ["THB"]},
+          "exchange_rate_decimal": {"type": "string", "enum": ["1"]},
           "doc_no": {
             "type": "string"
           },
@@ -1265,14 +1345,23 @@
             "default": 7
           },
           "remark": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 255
           },
           "remark_2": {
             "type": "string",
-            "description": "สถานะเอกสารระดับหัวเอกสาร เช่น tax/notax/re"
+            "maxLength": 255,
+            "description": "Profile V1 free-text note. Legacy callers may continue sending their existing value."
+          },
+          "remark_5": {
+            "type": "string",
+            "maxLength": 255,
+            "pattern": "^NEXFLOW\\|",
+            "description": "Required Profile V1 provenance marker: NEXFLOW|<channel>|<order-or-bill>."
           },
           "details": {
             "type": "array",
+            "maxItems": 500,
             "items": {
               "$ref": "#/components/schemas/DocItem"
             },
@@ -1309,6 +1398,75 @@
           },
           "total_amount": {
             "type": "number"
+          },
+          "vat_rate_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_value_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_discount_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_before_vat_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_vat_value_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_except_vat_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_after_vat_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_amount_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"}
+        }
+      },
+      "DocumentProfileCapabilitiesResponse": {
+        "type": "object",
+        "required": ["success", "data"],
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "object",
+            "required": ["capability", "versions", "max_request_bytes", "max_items", "max_text_characters", "profile_statuses", "correlation_header"],
+            "properties": {
+              "capability": {"type": "string", "enum": ["sml_document_profile"]},
+              "versions": {"type": "array", "items": {"type": "string", "enum": ["sml-document-v1"]}},
+              "max_request_bytes": {"type": "integer", "enum": [2097152]},
+              "max_items": {"type": "integer", "enum": [500]},
+              "max_text_characters": {"type": "integer", "enum": [255]},
+              "profile_statuses": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["pending", "complete", "needs_reconciliation", "terminal_failure"]}
+              },
+              "correlation_header": {"type": "string", "enum": ["X-Correlation-ID"]}
+            }
+          }
+        }
+      },
+      "GatewayCapabilitiesResponse": {
+        "type": "object",
+        "required": ["success", "data"],
+        "properties": {
+          "success": {"type": "boolean"},
+          "data": {
+            "type": "object",
+            "required": ["contract_revision", "document_profile", "cancellation", "correlation_header"],
+            "properties": {
+              "contract_revision": {"type": "string", "enum": ["sml-sales-document-profile-v2-20260903"]},
+              "document_profile": {
+                "type": "object",
+                "required": ["versions", "routes", "max_request_bytes", "max_input_items", "max_expanded_items", "max_text_characters"],
+                "properties": {
+                  "versions": {"type": "array", "items": {"type": "string", "enum": ["sml-document-v1"]}},
+                  "routes": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["saleorder", "saleinvoice", "saleordercancel", "saleinvoicecancel", "creditnote"]}
+                  },
+                  "max_request_bytes": {"type": "integer", "enum": [2097152]},
+                  "max_input_items": {"type": "integer", "enum": [500]},
+                  "max_expanded_items": {"type": "integer", "enum": [500]},
+                  "max_text_characters": {"type": "integer", "enum": [255]}
+                }
+              },
+              "cancellation": {
+                "type": "object",
+                "required": ["full_document_only", "source_lock_wait_seconds"],
+                "properties": {
+                  "full_document_only": {"type": "boolean", "enum": [true]},
+                  "source_lock_wait_seconds": {"type": "integer", "enum": [3]}
+                }
+              },
+              "correlation_header": {"type": "string", "enum": ["X-Correlation-ID"]}
+            }
           }
         }
       },
@@ -1322,6 +1480,22 @@
           "items"
         ],
         "properties": {
+          "document_profile_version": {
+            "type": "string",
+            "enum": ["sml-document-v1"],
+            "description": "Opt in to the Sale Order Profile V1 contract. Omit to preserve legacy behavior."
+          },
+          "marketplace_physical_goods": {"type": "boolean"},
+          "shipment_applicability": {
+            "type": "string",
+            "enum": ["required", "not_applicable"]
+          },
+          "shipment": {"$ref": "#/components/schemas/DocumentProfileShipment"},
+          "creator_code": {"type": "string", "enum": ["BILLFLOW"]},
+          "cashier_code": {"type": "string", "enum": ["BILLFLOW"]},
+          "user_request": {"type": "string", "enum": ["NEXFLOW"]},
+          "currency_code": {"type": "string", "enum": ["THB"]},
+          "exchange_rate_decimal": {"type": "string", "enum": ["1"]},
           "doc_no": {
             "type": "string",
             "example": "BF-SO2604000001"
@@ -1355,16 +1529,20 @@
             "type": "number",
             "default": 7
           },
+          "vat_rate_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
           "remark": {
             "type": "string"
           },
           "remark_2": {
             "type": "string",
-            "description": "สถานะเอกสารระดับหัวเอกสาร เช่น tax/notax/re"
+            "maxLength": 255,
+            "description": "Profile V1 free-text note."
           },
           "remark_5": {
             "type": "string",
-            "description": "หมายเหตุ 5 เช่น Shopee order number"
+            "maxLength": 255,
+            "pattern": "^NEXFLOW\\|",
+            "description": "Required Profile V1 provenance marker."
           },
           "inquiry_type": {
             "type": "integer",
@@ -1377,6 +1555,7 @@
           },
           "items": {
             "type": "array",
+            "maxItems": 500,
             "items": {
               "$ref": "#/components/schemas/DocItem"
             }
@@ -1413,7 +1592,14 @@
           },
           "total_amount": {
             "type": "number"
-          }
+          },
+          "total_value_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_discount_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_before_vat_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_vat_value_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_except_vat_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_after_vat_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"},
+          "total_amount_decimal": {"$ref": "#/components/schemas/DocumentProfileDecimal"}
         }
       },
       "StockItem": {
@@ -1872,8 +2058,12 @@
       },
       "SaleInvoiceCancelRequest": {
         "type": "object",
-        "description": "doc_no is the new credit-note document number (required on the create call; ignored on preview).",
+        "description": "doc_no is the new document number. Profile V1 is opt-in. Use a doc_format_code configured for screen SSC on sale-order /void, SIC on sale-invoice /void, or ST on /cancel.",
         "properties": {
+          "document_profile_version": {
+            "type": "string",
+            "enum": ["sml-document-v1"]
+          },
           "doc_no": {
             "type": "string",
             "example": "BF-CN2605000001"
@@ -1890,19 +2080,45 @@
           "doc_format_code": {
             "type": "string",
             "example": "CN",
-            "description": "Defaults to CN"
+            "description": "Defaults to SIC on /void and CN on /cancel"
           },
           "remark": {
             "type": "string"
           },
+          "remark_2": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "remark_5": {
+            "type": "string",
+            "maxLength": 255,
+            "example": "NEXFLOW|shopee_realtime|ORDER-1"
+          },
+          "creator_code": {
+            "type": "string",
+            "example": "BILLFLOW"
+          },
+          "cashier_code": {
+            "type": "string",
+            "example": "BILLFLOW"
+          },
           "user_request": {
-            "type": "string"
+            "type": "string",
+            "example": "NEXFLOW"
           }
         }
       },
       "SaleInvoiceCancelPreview": {
         "type": "object",
         "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "sale_order_cancel",
+              "sale_invoice_cancel",
+              "credit_note"
+            ]
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -1946,6 +2162,12 @@
             "type": "number"
           },
           "item_count": {
+            "type": "integer"
+          },
+          "source_total_amount": {
+            "type": "number"
+          },
+          "source_item_count": {
             "type": "integer"
           },
           "items": {
@@ -1994,6 +2216,33 @@
           },
           "message": {
             "type": "string"
+          },
+          "log_status": {
+            "type": "string"
+          },
+          "log_warning": {
+            "type": "string"
+          },
+          "payload_hash": {
+            "type": "string"
+          },
+          "core_status": {
+            "type": "string"
+          },
+          "profile_status": {
+            "type": "string",
+            "enum": ["pending", "complete", "needs_reconciliation", "terminal_failure"]
+          },
+          "required_checks": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "completed_checks": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "reconciliation_required": {
+            "type": "boolean"
           }
         }
       },
@@ -3280,7 +3529,7 @@
           "Doc Formats"
         ],
         "summary": "Preview next SML document number",
-        "description": "Reads existing SML documents and returns the next number for saleorder, saleinvoice, purchaseorder, or receipt.",
+        "description": "Reads existing SML documents and returns the next number for saleorder, saleordercancel, saleinvoice, saleinvoicecancel, creditnote, purchaseorder, or receipt.",
         "parameters": [
           {
             "name": "route",
@@ -3290,11 +3539,17 @@
               "type": "string",
               "enum": [
                 "saleorder",
+                "saleordercancel",
                 "saleinvoice",
+                "saleinvoicecancel",
+                "creditnote",
                 "purchaseorder",
                 "receipt",
                 "so",
+                "ssc",
                 "si",
+                "sic",
+                "cn",
                 "po",
                 "rc"
               ]
@@ -3810,6 +4065,38 @@
         }
       }
     },
+    "/api/v1/capabilities": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Read the Gateway contract revision, Profile routes and hard limits",
+        "responses": {
+          "200": {
+            "description": "gateway capabilities available",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/GatewayCapabilitiesResponse"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ic/document-profile-capabilities": {
+      "get": {
+        "tags": ["Documents"],
+        "summary": "Read opt-in SML Document Profile capabilities and hard request limits",
+        "responses": {
+          "200": {
+            "description": "capability available",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/DocumentProfileCapabilitiesResponse"}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/ic/sale-invoices": {
       "post": {
         "tags": [
@@ -4283,6 +4570,17 @@
         }
       }
     },
+    "/api/v1/ic/stock-capabilities": {
+      "get": {
+        "tags": ["Stock"],
+        "summary": "Inspect stock availability modes for the selected tenant",
+        "description": "Returns the additive stock contract version and a tenant-specific fingerprint derived from the SML stock function. Clients must verify this response before opting in to net_sale_order_v1.",
+        "responses": {
+          "200": {"description": "Supported modes, exact quantity format, request limit, schema version, and source semantics fingerprint"},
+          "500": {"description": "SML capability could not be proven", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/ic/stock-locations": {
       "get": {
         "tags": ["Stock"],
@@ -4344,11 +4642,23 @@
         }
       }
     },
+    "/api/v1/ic/stock-demand-evidence/batch": {
+      "post": {
+        "tags": ["Stock"],
+        "summary": "Verify exact SML document demand before releasing reservations",
+        "description": "Bounded internal endpoint. Verifies active saleorder (TRANS_FLAG 36) or saleinvoice (TRANS_FLAG 44) lines by document, item, warehouse, location, and exact base quantity. Returns immutable evidence hashes and the tenant source fingerprint.",
+        "responses": {
+          "200": {"description": "Per-line verified, missing, or mismatch evidence"},
+          "400": {"description": "Invalid or oversized evidence batch", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "500": {"description": "SML evidence query error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/ic/stock-balances/batch": {
       "post": {
         "tags": ["Stock"],
         "summary": "Calculate stock balances for multiple warehouse scopes",
-        "description": "Calls the SML warehouse-location stock function once, filters requested item codes with a parameterized ANY predicate, aggregates each scope, then clamps negative item totals to zero. Selected scopes also return excluded_locations grouped by warehouse, location, and unit so clients can explain balances that are not used in the selected scope. Set include_item_excluded_locations=true on a scope to opt in to the same breakdown under each affected item without changing the default payload for other shared-service consumers.",
+        "description": "Defaults to physical_v1 and preserves legacy balance_qty semantics. The opt-in net_sale_order_v1 mode calculates physical stock and validated TRANS_FLAG 36 outstanding demand in one source statement, returns exact decimal strings and blocks ambiguous document/location chains. Selected scopes also return excluded_locations grouped by warehouse, location, and unit.",
         "requestBody": {
           "required": true,
           "content": {
@@ -4358,6 +4668,7 @@
                 "required": ["as_of_date", "scopes"],
                 "properties": {
                   "as_of_date": {"type": "string", "format": "date"},
+                  "availability_mode": {"type": "string", "enum": ["physical_v1", "net_sale_order_v1"], "default": "physical_v1"},
                   "scopes": {
                     "type": "array",
                     "minItems": 1,
@@ -4390,7 +4701,7 @@
           }
         },
         "responses": {
-          "200": {"description": "Aggregated balances by scope and item, including excluded warehouse/location/unit breakdowns for selected scopes"},
+          "200": {"description": "Aggregated balances by scope and item. Net mode also returns physical, outstanding, usable exact quantities, mode/schema/fingerprint, source snapshot time, and per-item diagnostics."},
           "400": {"description": "Invalid scope, item, location, or request cap", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "504": {"description": "Stock calculation timeout", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
         }
@@ -4855,13 +5166,196 @@
         }
       }
     },
+    "/api/v1/ic/sale-orders/{doc_no}/void/preview": {
+      "post": {
+        "tags": ["Documents"],
+        "summary": "Preview cancellation of a sale order",
+        "description": "Read-only preview of the full-document TRANS_FLAG 37 SSC reversal. The source sale order is not changed.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "example": "SO26090001"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SaleInvoiceCancelRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "preview (status=ready or already_exists)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {"$ref": "#/components/schemas/SuccessResponse"},
+                    {"properties": {"data": {"$ref": "#/components/schemas/SaleInvoiceCancelPreview"}}}
+                  ]
+                }
+              }
+            }
+          },
+          "400": {"description": "invalid request or SSC document format", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "source sale order not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "source already cancelled, unverifiable ownership, or document busy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/ic/sale-orders/{doc_no}/void": {
+      "post": {
+        "tags": ["Documents"],
+        "summary": "Cancel a sale order",
+        "description": "Creates an exact full-document TRANS_FLAG 37 SSC reversal, then marks the source TRANS_FLAG 36 used_status=1. Profile V1 is idempotent by source intent and payload hash.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "example": "SO26090001"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SaleInvoiceCancelRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "sale order cancellation created",
+            "content": {"application/json": {"schema": {"allOf": [
+              {"$ref": "#/components/schemas/SuccessResponse"},
+              {"properties": {"data": {"$ref": "#/components/schemas/SaleInvoiceCancelPreview"}}}
+            ]}}}
+          },
+          "200": {
+            "description": "already_exists and reconciled",
+            "content": {"application/json": {"schema": {"allOf": [
+              {"$ref": "#/components/schemas/SuccessResponse"},
+              {"properties": {"data": {"$ref": "#/components/schemas/SaleInvoiceCancelPreview"}}}
+            ]}}}
+          },
+          "400": {"description": "invalid request or SSC document format", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "source sale order not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "duplicate, source-state conflict, unverifiable ownership, hash mismatch, or document busy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "413": {"description": "request or source item limit exceeded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/ic/sale-invoices/{doc_no}/void/preview": {
+      "post": {
+        "tags": ["Documents"],
+        "summary": "Preview cancellation of a sale invoice",
+        "description": "Read-only preview of the header-only TRANS_FLAG 45 document. The source sale invoice and its detail rows are not changed.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "example": "BF-INV26050001"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SaleInvoiceCancelRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "preview (status=ready or already_exists)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {"$ref": "#/components/schemas/SuccessResponse"},
+                    {"properties": {"data": {"$ref": "#/components/schemas/SaleInvoiceCancelPreview"}}}
+                  ]
+                }
+              }
+            }
+          },
+          "400": {"description": "invalid request or SIC document format", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "source sale invoice not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "source sale invoice cannot be cancelled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/ic/sale-invoices/{doc_no}/void": {
+      "post": {
+        "tags": ["Documents"],
+        "summary": "Cancel a sale invoice",
+        "description": "Creates the header-only TRANS_FLAG 45 cancellation document and marks the source TRANS_FLAG 44 header and detail rows last_status=1. Idempotent by source sale invoice.",
+        "parameters": [
+          {
+            "name": "doc_no",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "example": "BF-INV26050001"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SaleInvoiceCancelRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "sale invoice cancellation created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {"$ref": "#/components/schemas/SuccessResponse"},
+                    {"properties": {"data": {"$ref": "#/components/schemas/SaleInvoiceCancelPreview"}}}
+                  ]
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "already_exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {"$ref": "#/components/schemas/SuccessResponse"},
+                    {"properties": {"data": {"$ref": "#/components/schemas/SaleInvoiceCancelPreview"}}}
+                  ]
+                }
+              }
+            }
+          },
+          "400": {"description": "invalid request or SIC document format", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "source sale invoice not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "duplicate doc_no, state race, or source sale invoice cannot be cancelled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/ic/sale-invoices/{doc_no}/cancel/preview": {
       "post": {
         "tags": [
           "Documents"
         ],
-        "summary": "Preview a sale-invoice cancellation (credit note)",
-        "description": "Read-only: shows the credit note that would be created for this sale invoice without writing anything. doc_no in the path is the existing sale invoice; the request body's doc_no (if any) is ignored on preview.",
+        "summary": "Preview a sale return / credit note",
+        "description": "Read-only: shows the TRANS_FLAG 48 sale return / credit note that would be created for this sale invoice without writing anything.",
         "parameters": [
           {
             "name": "doc_no",
@@ -4953,8 +5447,8 @@
         "tags": [
           "Documents"
         ],
-        "summary": "Create a credit note cancelling a sale invoice",
-        "description": "Writes a credit note (ic_trans/ic_trans_detail, trans_flag=credit note) referencing the sale invoice and marks the source invoice used_status=1. Idempotent: if a credit note already exists for this sale invoice, returns 200 with status=already_exists instead of creating a duplicate.",
+        "summary": "Create a sale return / credit note",
+        "description": "Writes a TRANS_FLAG 48 sale return / credit note with item and receivable references to the source sale invoice, then marks the source invoice used_status=1. Idempotent by source sale invoice.",
         "parameters": [
           {
             "name": "doc_no",

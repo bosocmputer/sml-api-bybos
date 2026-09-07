@@ -2,6 +2,7 @@ package compat
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -148,6 +149,27 @@ func TestPrepareDocumentItemsKeepsHeaderDiscountOutOfSetChildren(t *testing.T) {
 	}
 	if got[1].SumAmount+got[2].SumAmount != 100 {
 		t.Fatalf("children gross = %.2f, want 100", got[1].SumAmount+got[2].SumAmount)
+	}
+}
+
+func TestPrepareDocumentItemsRejectsMoreThan500ExpandedRows(t *testing.T) {
+	components := make([]setproducts.Component, maxDocumentItems)
+	for i := range components {
+		components[i] = setproducts.Component{
+			LineNumber: i + 1, ItemCode: fmt.Sprintf("C-%03d", i), ItemType: 0,
+			UnitCode: "ชิ้น", Qty: 1, SumAmount: 1, UnitFactor: 1, Active: true, UnitValid: true,
+		}
+	}
+	definition := setproducts.BuildDefinition("SET-500", components)
+	products := map[string]setproducts.Product{"SET-500": {Code: "SET-500", ItemType: 3, Active: true, Definition: &definition}}
+	_, err := prepareDocumentItems(
+		docPayload{ExpandSetItems: true, TotalValue: 500, TotalBeforeVAT: 500, TotalAfterVAT: 500, TotalAmount: 500},
+		[]docItem{{ItemCode: "SET-500", UnitCode: "ชุด", Qty: 1, Price: 500, SumAmount: 500, SumAmountExclVAT: 500}},
+		routeSaleOrder, products,
+	)
+	var appErr *appError
+	if !errors.As(err, &appErr) || appErr.Code != "expanded_item_limit_exceeded" {
+		t.Fatalf("expanded limit error=%#v", err)
 	}
 }
 

@@ -246,10 +246,14 @@ Set-product fields เป็น contract กลางแบบ tenant-generic �
 
 | Method | Path | Description |
 |---|---|---|
+| `GET` | `/api/v1/capabilities` | handshake เดียวสำหรับ contract revision, Profile routes, cancellation semantics และ hard limits ก่อน Preview/Enable |
 | `POST` | `/api/v1/ic/sale-orders` | สร้างใบสั่งขาย (sale order); `expand_set_items=true` เพื่อเขียน parent/child สินค้าชุด |
-| `POST` | `/api/v1/ic/sale-invoices` | สร้างใบกำกับภาษี (sale invoice); `expand_set_items=true` เพื่อเขียน parent/child สินค้าชุด |
-| `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel/preview` | Preview ใบลดหนี้ (credit note) ที่จะสร้างจากใบกำกับภาษีเดิม โดยไม่เขียนข้อมูล |
-| `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel` | สร้างใบลดหนี้ยกเลิกใบกำกับภาษี (`trans_flag` credit note); idempotent ถ้ามีใบลดหนี้อยู่แล้วจะคืน `status=already_exists` |
+| `GET` | `/api/v1/ic/document-profile-capabilities` | อ่าน capability/limits ของ SML Document Profile แบบ opt-in รวม header `X-Correlation-ID` สำหรับ trace ข้ามระบบ |
+| `POST` | `/api/v1/ic/sale-invoices` | สร้างใบกำกับภาษี (sale invoice); `expand_set_items=true` เพื่อเขียน parent/child สินค้าชุด; ใส่ `document_profile_version=sml-document-v1` เพื่อเขียน VAT/shipment/main log ใน transaction เดียวและ reconcile `erp_logs` ภายหลัง |
+| `POST` | `/api/v1/ic/sale-invoices/:doc_no/void/preview` | Preview เอกสารยกเลิกขายสินค้าและบริการ (`TRANS_FLAG 45`, screen `SIC`) โดยไม่เขียนข้อมูล |
+| `POST` | `/api/v1/ic/sale-invoices/:doc_no/void` | สร้างเอกสารยกเลิกขายสินค้าและบริการแบบ header-only และยกเลิกใบขายเดิม; idempotent ตามใบขายต้นทาง |
+| `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel/preview` | Preview รับคืนสินค้า/ลดหนี้ (`TRANS_FLAG 48`, screen `ST`) โดยไม่เขียนข้อมูล |
+| `POST` | `/api/v1/ic/sale-invoices/:doc_no/cancel` | สร้างรับคืนสินค้า/ลดหนี้พร้อมรายการสินค้าและลูกหนี้อ้างอิงใบขายเดิม; idempotent ตามใบขายต้นทาง |
 | `POST` | `/api/v1/ic/purchase-orders` | สร้างใบสั่งซื้อ (purchase order) |
 
 เมื่อใช้ `expand_set_items=true` ผู้เรียกต้องส่งยอด header และยอด parent
@@ -275,7 +279,9 @@ Set-product fields เป็น contract กลางแบบ tenant-generic �
 | `GET` | `/api/v1/ic/stock/:code` | ยอดคงเหลือสต๊อกตาม item code |
 | `GET` | `/api/v1/ic/stock-locations` | คลัง/พื้นที่ active พร้อมยอด orphan/blank สำหรับตรวจ config |
 | `GET` | `/api/v1/ic/stock-catalog` | สินค้า stock active พร้อม barcode และหน่วย; ส่ง `include_sets=true` เพื่อ opt in สินค้าชุด |
+| `GET` | `/api/v1/ic/stock-capabilities` | availability modes, exact-decimal contract และ tenant source fingerprint |
 | `POST` | `/api/v1/ic/stock-balances/batch` | คำนวณยอดหลาย warehouse scope แบบ parameterized สำหรับ marketplace stock sync |
+| `POST` | `/api/v1/ic/stock-demand-evidence/batch` | ยืนยันเอกสาร SML/สินค้า/scope/จำนวน exact ก่อนปล่อย reservation |
 
 `stock-balances/batch` จำกัด 20 scopes, 50,000 item codes และ 1,000
 warehouse/location pairs ต่อ request ระบบเรียก stock function โดยส่ง filter ว่าง
@@ -286,6 +292,18 @@ warehouse/location pairs ต่อ request ระบบเรียก stock fun
 แต่ละ item จะคืน breakdown เดียวกันใน `items[].excluded_locations` สำหรับ UI
 ระดับสินค้า ฟิลด์นี้เป็น opt-in เพื่อไม่เพิ่ม payload ให้ consumer อื่นของ shared
 service ยอดดังกล่าวเป็นข้อมูลประกอบและไม่รวมใน `balance_qty`
+
+เมื่อไม่ส่ง `availability_mode`, `stock-balances/batch` ใช้ `physical_v1` เพื่อคง
+behavior เดิม หลัง client ผ่าน capability handshake แล้วจึงเลือก
+`net_sale_order_v1` เพื่อหักใบสั่งขาย SML `TRANS_FLAG=36` ที่ยังส่งไม่ครบ
+response net mode มี exact decimal strings, source snapshot/fingerprint และ
+diagnostic ที่ fail closed เมื่อ document chain หรือ location กำกวม
+
+`stock-demand-evidence/batch` จำกัด 100 เอกสารและ 500 รายการต่อ request รองรับ
+`saleorder` (`TRANS_FLAG=36`) และ `saleinvoice` (`TRANS_FLAG=44`) และคืนสถานะ
+`verified` เฉพาะเมื่อ doc no, item, warehouse, location และ exact base quantity
+ตรงกับเอกสาร active ใน SML ทั้งหมด Client ต้องเก็บ evidence hash/source snapshot
+ก่อนเปลี่ยน reservation เป็น incorporated
 
 ### Warehouses
 
@@ -300,7 +318,7 @@ service ยอดดังกล่าวเป็นข้อมูลประ
 |---|---|---|
 | `GET` | `/api/v1/ic/doc-formats` | รูปแบบเอกสารทั้งหมดจาก `erp_doc_format`; ส่ง `screen_code` ได้ถ้าต้องการ filter |
 | `GET` | `/api/v1/ic/doc-formats/by-code?doc_format_code=PO` | ค้นหารูปแบบเอกสารด้วย `erp_doc_format.code` และคืน `screen_code` ของรายการนั้น |
-| `GET` | `/api/v1/ic/doc-no/next` | ดูเลขเอกสารถัดไปจาก SML สำหรับ `saleorder`, `saleinvoice`, `purchaseorder`, `receipt` |
+| `GET` | `/api/v1/ic/doc-no/next` | ดูเลขเอกสารถัดไปจาก SML สำหรับ `saleorder`, `saleinvoice`, `saleinvoicecancel`, `creditnote`, `purchaseorder`, `receipt` |
 | `GET` | `/api/v1/ic/document-candidates?doc_format_code=` | ค้นหาเอกสารจาก `ic_trans UNION ALL ap_ar_trans` ตาม `doc_format_code`; `search` เป็น contains literal บน `doc_no`, `cust_code`, `ar_customer.name_1`, `ap_supplier.name_1` |
 | `POST` | `/api/v1/ic/document-candidates/batch` | ตรวจเลขเอกสารแบบ exact match สูงสุด 30 รายการจากทั้ง `ic_trans` และ `ap_ar_trans`; ใช้สำหรับ PaperLess batch import |
 | `GET` | `/api/v1/ic/document-candidates/:doc_no?doc_format_code=` | เอกสารเดี่ยวจากตารางเดียวกับ document-candidates |

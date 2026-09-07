@@ -18,6 +18,7 @@ func TestOpenAPISpecIsValidAndBillFlowNative(t *testing.T) {
 
 	paths := spec["paths"].(map[string]any)
 	for _, path := range []string{
+		"/api/v1/capabilities",
 		"/api/v1/ar/customers",
 		"/api/v1/ar/receipt-candidates",
 		"/api/v1/ar/receipts",
@@ -43,7 +44,14 @@ func TestOpenAPISpecIsValidAndBillFlowNative(t *testing.T) {
 		"/api/v1/ic/stock-balances/batch",
 		"/api/v1/marketplace/nextstep/orders",
 		"/api/v1/ic/sale-orders",
+		"/api/v1/ic/sale-orders/{doc_no}/void/preview",
+		"/api/v1/ic/sale-orders/{doc_no}/void",
+		"/api/v1/ic/document-profile-capabilities",
 		"/api/v1/ic/sale-invoices",
+		"/api/v1/ic/sale-invoices/{doc_no}/void/preview",
+		"/api/v1/ic/sale-invoices/{doc_no}/void",
+		"/api/v1/ic/sale-invoices/{doc_no}/cancel/preview",
+		"/api/v1/ic/sale-invoices/{doc_no}/cancel",
 		"/api/v1/ic/purchase-orders",
 		"/openapi.json",
 	} {
@@ -74,12 +82,33 @@ func TestOpenAPISpecIsValidAndBillFlowNative(t *testing.T) {
 			t.Fatalf("required schema missing from OpenAPI spec: %s", schema)
 		}
 	}
+	if _, ok := schemas["GatewayCapabilitiesResponse"]; !ok {
+		t.Fatal("GatewayCapabilitiesResponse missing")
+	}
 
 	docCreated := schemas["DocCreatedResponse"].(map[string]any)
 	docData := docCreated["properties"].(map[string]any)["data"].(map[string]any)["properties"].(map[string]any)
-	for _, field := range []string{"log_status", "log_warning"} {
+	for _, field := range []string{"log_status", "log_warning", "payload_hash", "core_status", "profile_status", "required_checks", "completed_checks", "reconciliation_required"} {
 		if _, ok := docData[field]; !ok {
 			t.Fatalf("DocCreatedResponse.data.%s missing", field)
+		}
+	}
+
+	saleInvoiceProps := schemas["SaleInvoiceRequest"].(map[string]any)["properties"].(map[string]any)
+	for _, field := range []string{"document_profile_version", "shipment_applicability", "shipment", "creator_code", "cashier_code", "user_request", "currency_code", "exchange_rate_decimal", "remark_5", "total_amount_decimal"} {
+		if _, ok := saleInvoiceProps[field]; !ok {
+			t.Fatalf("SaleInvoiceRequest.%s missing", field)
+		}
+	}
+	details := saleInvoiceProps["details"].(map[string]any)
+	if details["maxItems"] != float64(500) {
+		t.Fatalf("SaleInvoiceRequest.details maxItems = %v, want 500", details["maxItems"])
+	}
+
+	cancellationProps := schemas["SaleInvoiceCancelRequest"].(map[string]any)["properties"].(map[string]any)
+	for _, field := range []string{"document_profile_version", "remark_2", "remark_5", "creator_code", "cashier_code", "user_request"} {
+		if _, ok := cancellationProps[field]; !ok {
+			t.Fatalf("SaleInvoiceCancelRequest.%s missing", field)
 		}
 	}
 }

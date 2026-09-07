@@ -43,7 +43,8 @@ func TestExcludedLocationBalancesDoNotMixUnits(t *testing.T) {
 
 func TestNormalizeStockBatchRequest(t *testing.T) {
 	req, items, err := normalizeStockBatchRequest(StockBalanceBatchRequest{
-		AsOfDate: "2026-07-01",
+		AsOfDate:         "2026-07-01",
+		AvailabilityMode: "net_sale_order_v1",
 		Scopes: []StockBalanceScopeRequest{
 			{ScopeID: " shop-1 ", ScopeMode: "SELECTED", ItemCodes: []string{"B", "A", "A"}, Locations: []StockLocationPair{{Warehouse: "01", Location: "A"}, {Warehouse: "01", Location: "A"}}},
 			{ScopeID: "shop-2", ScopeMode: "all", ItemCodes: []string{"C", "A"}},
@@ -57,6 +58,117 @@ func TestNormalizeStockBatchRequest(t *testing.T) {
 	}
 	if req.Scopes[0].ScopeID != "shop-1" || len(req.Scopes[0].Locations) != 1 || strings.Join(req.Scopes[0].ItemCodes, ",") != "A,B" {
 		t.Fatalf("normalized scope = %+v", req.Scopes[0])
+	}
+	if req.AvailabilityMode != stockAvailabilityNetSaleOrderV1 {
+		t.Fatalf("availability mode = %q", req.AvailabilityMode)
+	}
+}
+
+func TestNormalizeStockBatchDefaultsToPhysicalAvailability(t *testing.T) {
+	req, _, err := normalizeStockBatchRequest(StockBalanceBatchRequest{
+		AsOfDate: "2026-07-01",
+		Scopes:   []StockBalanceScopeRequest{{ScopeID: "s", ScopeMode: "all", ItemCodes: []string{"A"}}},
+	})
+	if err != nil {
+		t.Fatalf("normalize error = %v", err)
+	}
+	if req.AvailabilityMode != stockAvailabilityPhysicalV1 {
+		t.Fatalf("availability mode = %q", req.AvailabilityMode)
+	}
+}
+
+func TestNormalizeStockBatchRejectsUnknownAvailabilityMode(t *testing.T) {
+	_, _, err := normalizeStockBatchRequest(StockBalanceBatchRequest{
+		AsOfDate:         "2026-07-01",
+		AvailabilityMode: "guess",
+		Scopes:           []StockBalanceScopeRequest{{ScopeID: "s", ScopeMode: "all", ItemCodes: []string{"A"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "availability_mode") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestNetAvailabilitySubtractsOutstandingDemandExactly(t *testing.T) {
+	state := newStockBalanceScopeState(StockBalanceScopeRequest{
+		ScopeID: "shop:1", ScopeMode: "selected", ItemCodes: []string{"A"},
+		Locations: []StockLocationPair{{Warehouse: "W1", Location: "S1"}},
+	})
+	accumulateStockBalanceRow([]stockBalanceScopeState{state}, stockBalanceRow{
+		ItemCode: "A", WarehouseCode: "W1", LocationCode: "S1", UnitCode: "ชิ้น",
+		BalanceQtyExact: "10.25", OutstandingQtyExact: "3.5",
+	})
+	item, err := finalizeStockBalanceItem(state.items["A"], stockAvailabilityNetSaleOrderV1)
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if item.PhysicalBalanceQtyExact != "10.25" || item.OutstandingSalesOrderQtyExact != "3.5" || item.AvailableBalanceQtyExact != "6.75" {
+		t.Fatalf("unexpected exact quantities: %+v", item)
+	}
+	if item.BalanceQty != 6.75 {
+		t.Fatalf("balance = %v", item.BalanceQty)
+	}
+}
+
+func TestPhysicalAvailabilityDoesNotSubtractOutstandingDemand(t *testing.T) {
+	state := newStockBalanceScopeState(StockBalanceScopeRequest{
+		ScopeID: "shop:1", ScopeMode: "all", ItemCodes: []string{"A"},
+	})
+	accumulateStockBalanceRow([]stockBalanceScopeState{state}, stockBalanceRow{
+		ItemCode: "A", WarehouseCode: "W1", LocationCode: "S1",
+		BalanceQtyExact: "10", OutstandingQtyExact: "3",
+	})
+	item, err := finalizeStockBalanceItem(state.items["A"], stockAvailabilityPhysicalV1)
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if item.BalanceQty != 10 || item.AvailableBalanceQtyExact != "10" {
+		t.Fatalf("physical mode changed legacy balance: %+v", item)
+	}
+}
+
+func TestStockBalanceNetSQLUsesOneSnapshotAndValidatedDocumentStates(t *testing.T) {
+	lower := strings.ToLower(stockBalanceNetRowsSQL)
+	for _, fragment := range []string{
+		"with requested_items as",
+		"sml_ic_function_stock_balance_warehouse_location",
+		"trans_flag = 36",
+		"trans_flag = 44",
+		"ref_doc_no",
+		"stand_value",
+		"divide_value",
+		"count(distinct doc_date)",
+		"sale_order_document_identity_ambiguous",
+		"source_snapshot_at",
+	} {
+		if !strings.Contains(lower, fragment) {
+			t.Fatalf("net query missing %q", fragment)
+		}
+	}
+}
+
+func TestNormalizeStockDemandEvidenceRequiresUniqueExactLines(t *testing.T) {
+	request, err := normalizeStockDemandEvidenceRequest(StockDemandEvidenceBatchRequest{Lines: []StockDemandEvidenceRequestLine{{
+		EvidenceID: "reservation-1:item-A", DocNo: "SO-2607-0010", Route: "SaleOrder",
+		ItemCode: "A", WarehouseCode: "W1", LocationCode: "S1", ExpectedBaseQtyExact: "48.000",
+	}}})
+	if err != nil {
+		t.Fatalf("normalize evidence: %v", err)
+	}
+	if request.Lines[0].Route != "saleorder" || request.Lines[0].TransFlag != 36 || request.Lines[0].ExpectedBaseQtyExact != "48.000" {
+		t.Fatalf("normalized=%+v", request.Lines[0])
+	}
+	request.Lines = append(request.Lines, request.Lines[0])
+	if _, err := normalizeStockDemandEvidenceRequest(request); err == nil {
+		t.Fatal("duplicate evidence identity must fail")
+	}
+}
+
+func TestStockDemandEvidenceSQLIsScopeAndDocumentExact(t *testing.T) {
+	lower := strings.ToLower(stockDemandEvidenceSQL)
+	for _, fragment := range []string{"jsonb_to_recordset", "d.doc_no=r.doc_no", "d.item_code=r.item_code", "d.wh_code", "d.shelf_code", "d.trans_flag=r.trans_flag", "stand_value", "divide_value", "transaction_timestamp"} {
+		if !strings.Contains(lower, fragment) {
+			t.Fatalf("evidence query missing %q", fragment)
+		}
 	}
 }
 
@@ -147,6 +259,16 @@ func TestStockCatalogOrdersUnitsBySMLPriority(t *testing.T) {
 	}
 	if !strings.Contains(lower, "unit_standard_stand_value") || !strings.Contains(lower, "unit_standard_divide_value") {
 		t.Fatal("catalog must preserve explicit SML standard-unit conversion when ic_unit_use has no row")
+	}
+}
+
+func TestStockCatalogAcceptsObservedUnitUseStatusConventions(t *testing.T) {
+	lower := strings.ToLower(stockCatalogSQL)
+	if !strings.Contains(lower, "coalesce(u.status, 0) in (0, 1)") {
+		t.Fatal("catalog must include ic_unit_use rows from both observed SML status conventions")
+	}
+	if !strings.Contains(lower, "coalesce(existing.status, 0) in (0, 1)") {
+		t.Fatal("standard-unit fallback must detect units from both observed SML status conventions")
 	}
 }
 
