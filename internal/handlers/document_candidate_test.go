@@ -63,6 +63,26 @@ func TestCandidateListQuerySearchesBothTablesAndParties(t *testing.T) {
 	}
 }
 
+func TestCandidateListQueryJoinsDepartment(t *testing.T) {
+	query := candidateListQuery("")
+	for _, want := range []string{
+		"LEFT JOIN erp_department_list dept ON dept.code = t.department_code",
+		"COALESCE(t.department_code,'') AS department_code",
+		"COALESCE(dept.name_1,'') AS department_name",
+		"department_code, department_name",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("candidate query missing %q:\n%s", want, query)
+		}
+	}
+	// Both ic_trans and ap_ar_trans branches must join the department master,
+	// not just one - a customer with a department set only on financial
+	// documents would otherwise silently show blank on IC-sourced ones.
+	if strings.Count(query, "LEFT JOIN erp_department_list") != 2 {
+		t.Fatalf("expected department join in both UNION branches, got query:\n%s", query)
+	}
+}
+
 func TestTruncateCandidateSearchCapsRunes(t *testing.T) {
 	input := strings.Repeat("ก", 130)
 	got := truncateCandidateSearch(input)
@@ -115,6 +135,9 @@ func TestCandidateBatchQueryFiltersEachSourceBeforeUnion(t *testing.T) {
 	}
 	if strings.Count(query, "t.doc_no = ANY(@doc_nos)") != 2 {
 		t.Fatalf("batch query must filter both source tables:\n%s", query)
+	}
+	if strings.Count(query, "LEFT JOIN erp_department_list") != 2 {
+		t.Fatalf("batch query must join department in both source tables:\n%s", query)
 	}
 }
 

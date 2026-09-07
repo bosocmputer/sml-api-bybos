@@ -27,16 +27,18 @@ func NewDocumentCandidateHandler(dbm *db.Manager) *DocumentCandidateHandler {
 }
 
 type DocumentCandidate struct {
-	DocNo         string  `json:"doc_no"`
-	DocDate       string  `json:"doc_date"`
-	DocFormatCode string  `json:"doc_format_code"`
-	TransFlag     int     `json:"trans_flag"`
-	Table         string  `json:"table"`
-	PartyCode     string  `json:"party_code"`
-	PartyName     string  `json:"party_name"`
-	PartyType     string  `json:"party_type"`
-	TotalAmount   float64 `json:"total_amount"`
-	IsLockRecord  int     `json:"is_lock_record"`
+	DocNo          string  `json:"doc_no"`
+	DocDate        string  `json:"doc_date"`
+	DocFormatCode  string  `json:"doc_format_code"`
+	TransFlag      int     `json:"trans_flag"`
+	Table          string  `json:"table"`
+	PartyCode      string  `json:"party_code"`
+	PartyName      string  `json:"party_name"`
+	PartyType      string  `json:"party_type"`
+	DepartmentCode string  `json:"department_code"`
+	DepartmentName string  `json:"department_name"`
+	TotalAmount    float64 `json:"total_amount"`
+	IsLockRecord   int     `json:"is_lock_record"`
 	// SourceRevision is only populated for exact and batch lookups. It is an
 	// opaque fingerprint of the active SML header/detail data, not raw SML data.
 	SourceRevision string `json:"source_revision,omitempty"`
@@ -293,7 +295,7 @@ FROM candidates
 func candidateListQuery(where string) string {
 	return candidateCTE() + `
 SELECT doc_no, doc_date, doc_format_code, trans_flag, table_name, trans_type,
-       party_code, ar_name, ap_name, total_amount, is_lock_record
+       party_code, ar_name, ap_name, department_code, department_name, total_amount, is_lock_record
 FROM candidates
 ` + where + `
 ORDER BY doc_date DESC, doc_no DESC
@@ -311,11 +313,14 @@ func candidateBatchQuery() string {
            COALESCE(t.cust_code,'') AS party_code,
            COALESCE(ar.name_1,'') AS ar_name,
            COALESCE(ap.name_1,'') AS ap_name,
+           COALESCE(t.department_code,'') AS department_code,
+           COALESCE(dept.name_1,'') AS department_name,
            COALESCE(t.total_amount, 0)::double precision AS total_amount,
            COALESCE(t.is_lock_record,0) AS is_lock_record
       FROM ic_trans t
       LEFT JOIN ar_customer ar ON ar.code = t.cust_code
       LEFT JOIN ap_supplier ap ON ap.code = t.cust_code
+      LEFT JOIN erp_department_list dept ON dept.code = t.department_code
      WHERE COALESCE(t.last_status,0)=0
        AND t.doc_format_code = @doc_format_code
        AND t.doc_no = ANY(@doc_nos)
@@ -329,6 +334,8 @@ func candidateBatchQuery() string {
            COALESCE(t.cust_code,'') AS party_code,
            COALESCE(ar.name_1,'') AS ar_name,
            COALESCE(ap.name_1,'') AS ap_name,
+           COALESCE(t.department_code,'') AS department_code,
+           COALESCE(dept.name_1,'') AS department_name,
            COALESCE(
                NULLIF(t.total_after_vat, 0),
                NULLIF(t.amount, 0),
@@ -350,12 +357,13 @@ func candidateBatchQuery() string {
       FROM ap_ar_trans t
       LEFT JOIN ar_customer ar ON ar.code = t.cust_code
       LEFT JOIN ap_supplier ap ON ap.code = t.cust_code
+      LEFT JOIN erp_department_list dept ON dept.code = t.department_code
      WHERE COALESCE(t.last_status,0)=0
        AND t.doc_format_code = @doc_format_code
        AND t.doc_no = ANY(@doc_nos)
 )
 SELECT doc_no, doc_date, doc_format_code, trans_flag, table_name, trans_type,
-       party_code, ar_name, ap_name, total_amount, is_lock_record
+       party_code, ar_name, ap_name, department_code, department_name, total_amount, is_lock_record
   FROM candidates
  ORDER BY doc_date DESC, doc_no DESC`
 }
@@ -515,11 +523,14 @@ func candidateCTE() string {
            COALESCE(t.cust_code,'') AS party_code,
            COALESCE(ar.name_1,'') AS ar_name,
            COALESCE(ap.name_1,'') AS ap_name,
+           COALESCE(t.department_code,'') AS department_code,
+           COALESCE(dept.name_1,'') AS department_name,
            COALESCE(t.total_amount, 0)::double precision AS total_amount,
            COALESCE(t.is_lock_record,0) AS is_lock_record
       FROM ic_trans t
       LEFT JOIN ar_customer ar ON ar.code = t.cust_code
       LEFT JOIN ap_supplier ap ON ap.code = t.cust_code
+      LEFT JOIN erp_department_list dept ON dept.code = t.department_code
      WHERE COALESCE(t.last_status,0)=0
     UNION ALL
     SELECT t.doc_no,
@@ -531,6 +542,8 @@ func candidateCTE() string {
            COALESCE(t.cust_code,'') AS party_code,
            COALESCE(ar.name_1,'') AS ar_name,
            COALESCE(ap.name_1,'') AS ap_name,
+           COALESCE(t.department_code,'') AS department_code,
+           COALESCE(dept.name_1,'') AS department_name,
            COALESCE(
                NULLIF(t.total_after_vat, 0),
                NULLIF(t.amount, 0),
@@ -552,6 +565,7 @@ func candidateCTE() string {
       FROM ap_ar_trans t
       LEFT JOIN ar_customer ar ON ar.code = t.cust_code
       LEFT JOIN ap_supplier ap ON ap.code = t.cust_code
+      LEFT JOIN erp_department_list dept ON dept.code = t.department_code
      WHERE COALESCE(t.last_status,0)=0
 )`
 }
@@ -651,6 +665,8 @@ func scanDocumentCandidate(row interface{ Scan(dest ...any) error }) (DocumentCa
 		&item.PartyCode,
 		&item.arName,
 		&item.apName,
+		&item.DepartmentCode,
+		&item.DepartmentName,
 		&item.TotalAmount,
 		&item.IsLockRecord,
 	)
