@@ -77,14 +77,24 @@ func TestValidateDocumentImagesRequest(t *testing.T) {
 			wantErr: "document_images_required",
 		},
 		{
-			name:  "rejects more than eight images",
+			name:  "accepts more than eight images - SML ERP's own UI only shows 8, but sml_doc_images has no such cap",
 			docNo: "PO26060001",
 			req: replaceDocumentImagesRequest{Images: []documentImageRequestItem{
 				documentImageRequest(1, jpeg), documentImageRequest(2, jpeg), documentImageRequest(3, jpeg),
 				documentImageRequest(4, jpeg), documentImageRequest(5, jpeg), documentImageRequest(6, jpeg),
 				documentImageRequest(7, jpeg), documentImageRequest(8, jpeg), documentImageRequest(9, jpeg),
 			}},
-			wantErr: "document_images_too_many",
+		},
+		{
+			name:    "rejects page number below one",
+			docNo:   "PO26060001",
+			req:     replaceDocumentImagesRequest{Images: []documentImageRequestItem{documentImageRequest(0, jpeg)}},
+			wantErr: "document_image_page_invalid",
+		},
+		{
+			name:  "accepts page numbers above eight",
+			docNo: "PO26060001",
+			req:   replaceDocumentImagesRequest{Images: []documentImageRequestItem{documentImageRequest(9, jpeg)}},
 		},
 		{
 			name:  "rejects duplicate page numbers",
