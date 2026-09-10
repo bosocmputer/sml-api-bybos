@@ -25,7 +25,6 @@ import (
 )
 
 const (
-	documentImagesMaxCount        = 8
 	documentImagesMaxDocNoLength  = 50
 	documentImagesMaxPayloadBytes = 24 << 20
 	documentImageMaxBytes         = 4 << 20
@@ -216,17 +215,14 @@ func validateDocumentImagesRequest(docNo string, req replaceDocumentImagesReques
 	if len(req.Images) == 0 {
 		return nil, documentImageValidationError{status: http.StatusBadRequest, code: "document_images_required", message: "at least one image is required"}
 	}
-	if len(req.Images) > documentImagesMaxCount {
-		return nil, documentImageValidationError{status: http.StatusBadRequest, code: "document_images_too_many", message: "document images exceed the SML limit", details: gin.H{"max": documentImagesMaxCount}}
-	}
 
 	prepared := make([]preparedDocumentImage, 0, len(req.Images))
 	seenPages := make(map[int]struct{}, len(req.Images))
 	totalBytes := 0
 	for i, item := range req.Images {
 		pageNo := item.PageNo
-		if pageNo < 1 || pageNo > documentImagesMaxCount {
-			return nil, documentImageValidationError{status: http.StatusBadRequest, code: "document_image_page_invalid", message: "image pageNo must be between 1 and 8", details: gin.H{"index": i}}
+		if pageNo < 1 {
+			return nil, documentImageValidationError{status: http.StatusBadRequest, code: "document_image_page_invalid", message: "image pageNo must be 1 or greater", details: gin.H{"index": i}}
 		}
 		if _, ok := seenPages[pageNo]; ok {
 			return nil, documentImageValidationError{status: http.StatusBadRequest, code: "document_image_page_duplicate", message: "image pageNo must be unique", details: gin.H{"pageNo": pageNo}}
