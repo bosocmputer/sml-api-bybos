@@ -172,6 +172,8 @@ func main() {
 	v1.POST("/documents/:doc_no/lock", lh.Lock)
 	dih := handlers.NewDocumentImageHandler(dbm)
 	v1.POST("/documents/:doc_no/images", dih.Replace)
+	v1.GET("/documents/:doc_no/images", dih.List)
+	v1.GET("/documents/:doc_no/images/:page_no/file", dih.Download)
 	rdh := handlers.NewRelatedDocumentHandler(dbm)
 	v1.GET("/documents/:doc_no/related", rdh.Related)
 	v1.GET("/documents/:doc_no/references", rdh.References)
