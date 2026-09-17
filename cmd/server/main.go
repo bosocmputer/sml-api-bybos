@@ -151,6 +151,13 @@ func main() {
 	v1.GET("/ic/document-candidates/:doc_no", dch.Get)
 	dnh := handlers.NewDocNoHandler(dbm)
 	v1.GET("/ic/doc-no/next", dnh.Next)
+	// Audit-trail checks read the tenant's <tenant>_logs database, which is
+	// what the SML ERP "ประวัติ" screen shows, so PaperLess and SML report the
+	// same edit history to the same user.
+	elh := handlers.NewERPLogStatusHandler(dbm)
+	v1.GET("/ic/documents/:doc_no/erp-log-baseline", elh.Baseline)
+	v1.GET("/ic/documents/:doc_no/erp-log-status", elh.Status)
+	v1.GET("/ic/documents/:doc_no/erp-log-history", elh.History)
 
 	// ERP master data
 	emh := handlers.NewERPMasterHandler(dbm)
