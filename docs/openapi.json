@@ -1308,7 +1308,7 @@
           },
           "marketplace_physical_goods": {
             "type": "boolean",
-            "description": "When true, a complete shipment is required before any SML core write."
+            "description": "Identifies Marketplace goods for audit/profile semantics. Shipment is required only when shipment_applicability is explicitly required."
           },
           "shipment_applicability": {
             "type": "string",
@@ -1485,7 +1485,10 @@
             "enum": ["sml-document-v1"],
             "description": "Opt in to the Sale Order Profile V1 contract. Omit to preserve legacy behavior."
           },
-          "marketplace_physical_goods": {"type": "boolean"},
+          "marketplace_physical_goods": {
+            "type": "boolean",
+            "description": "Identifies Marketplace goods for audit/profile semantics. Shipment is required only when shipment_applicability is explicitly required."
+          },
           "shipment_applicability": {
             "type": "string",
             "enum": ["required", "not_applicable"]

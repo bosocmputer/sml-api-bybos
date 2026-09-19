@@ -74,9 +74,6 @@ func normalizeAndValidateProfile(p *docPayload, items []docItem, route docRoute)
 	}
 
 	p.ShipmentApplicability = strings.TrimSpace(p.ShipmentApplicability)
-	if p.MarketplacePhysicalGoods && p.ShipmentApplicability != "required" {
-		return fmt.Errorf("marketplace physical-goods documents require shipment_applicability=required")
-	}
 	switch p.ShipmentApplicability {
 	case "required":
 		if p.Shipment == nil {
@@ -101,9 +98,6 @@ func normalizeAndValidateProfile(p *docPayload, items []docItem, route docRoute)
 			}
 		}
 	case "not_applicable":
-		if p.MarketplacePhysicalGoods {
-			return fmt.Errorf("shipment cannot be not_applicable for marketplace physical goods")
-		}
 		if p.Shipment != nil {
 			return fmt.Errorf("shipment must be omitted when shipment_applicability=not_applicable")
 		}

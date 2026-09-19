@@ -296,6 +296,17 @@ func profilePayloadForTest() docPayload {
 	}
 }
 
+func TestProfileAllowsMarketplaceGoodsWhenShipmentIsNotApplicable(t *testing.T) {
+	p := profilePayloadForTest()
+	p.MarketplacePhysicalGoods = true
+	p.ShipmentApplicability = "not_applicable"
+	p.Shipment = nil
+
+	if err := normalizeAndValidate(&p, p.Details, routeSaleInvoice); err != nil {
+		t.Fatalf("stock-focused marketplace document must not require shipment: %v", err)
+	}
+}
+
 func TestProfileCanonicalHashIsStableAndBusinessSensitive(t *testing.T) {
 	p := profilePayloadForTest()
 	if err := normalizeAndValidate(&p, p.Details, routeSaleInvoice); err != nil {
