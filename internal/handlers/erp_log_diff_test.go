@@ -231,3 +231,91 @@ func TestDiffERPLogPayloadsRejectsMalformedJSON(t *testing.T) {
 		t.Fatal("malformed payload must return an error, not an empty diff")
 	}
 }
+
+// SML appends empty placeholder rows when a document is re-saved. They must not
+// count as an edit: on Damrong 11% of edit rows differed only this way.
+func TestDiffERPLogPayloadsIgnoresAddedBlankRows(t *testing.T) {
+	oldRaw := []byte(`{"screendetail":[
+		{"line_number":"0","item_code":"AAA","item_name":"สินค้า A","qty":"1","price":"10"}
+	]}`)
+	newRaw := []byte(`{"screendetail":[
+		{"line_number":"0","item_code":"AAA","item_name":"สินค้า A","qty":"1","price":"10"},
+		{"line_number":"1","item_code":"","item_name":"null","qty":"0.00000000000000","price":"0","sum_amount":"0"},
+		{"line_number":"2","qty":"0","price":"0"}
+	]}`)
+
+	changes, err := diffERPLogPayloads(oldRaw, newRaw)
+	if err != nil {
+		t.Fatalf("diff failed: %v", err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("blank placeholder rows must not count as a change, got %+v", changes)
+	}
+}
+
+func TestDiffERPLogPayloadsIgnoresRemovedBlankRows(t *testing.T) {
+	oldRaw := []byte(`{"screendetail":[
+		{"line_number":"0","item_code":"AAA","item_name":"สินค้า A","qty":"1","price":"10"},
+		{"line_number":"1","item_code":"","qty":"0","price":"0"}
+	]}`)
+	newRaw := []byte(`{"screendetail":[
+		{"line_number":"0","item_code":"AAA","item_name":"สินค้า A","qty":"1","price":"10"}
+	]}`)
+
+	changes, err := diffERPLogPayloads(oldRaw, newRaw)
+	if err != nil {
+		t.Fatalf("diff failed: %v", err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("removing a blank row must not count as a change, got %+v", changes)
+	}
+}
+
+// The skip must never swallow a real line. Each case has something a person
+// typed, even though the row has no product code.
+func TestDiffERPLogPayloadsStillReportsNonBlankRows(t *testing.T) {
+	tests := []struct {
+		name string
+		row  string
+	}{
+		{"has product code", `{"line_number":"1","item_code":"BBB","qty":"0","price":"0"}`},
+		{"has a name but no code", `{"line_number":"1","item_code":"","item_name":"ค่าขนส่ง","qty":"0","price":"0"}`},
+		{"has quantity but no code", `{"line_number":"1","item_code":"","qty":"3","price":"0"}`},
+		{"has price but no code", `{"line_number":"1","item_code":"","qty":"0","price":"25"}`},
+		{"has amount but no code", `{"line_number":"1","item_code":"","qty":"0","price":"0","sum_amount":"100"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldRaw := []byte(`{"screendetail":[{"line_number":"0","item_code":"AAA","qty":"1","price":"10"}]}`)
+			newRaw := []byte(`{"screendetail":[{"line_number":"0","item_code":"AAA","qty":"1","price":"10"},` + tc.row + `]}`)
+
+			changes, err := diffERPLogPayloads(oldRaw, newRaw)
+			if err != nil {
+				t.Fatalf("diff failed: %v", err)
+			}
+			if len(changes) != 1 || changes[0].Field != "row_added" {
+				t.Fatalf("a row with content must still be reported as added, got %+v", changes)
+			}
+		})
+	}
+}
+
+// Filling in a placeholder line is a real edit: the blank row becomes a product.
+func TestDiffERPLogPayloadsReportsBlankRowFilledIn(t *testing.T) {
+	oldRaw := []byte(`{"screendetail":[
+		{"line_number":"0","item_code":"AAA","qty":"1","price":"10"},
+		{"line_number":"1","item_code":"","qty":"0","price":"0"}
+	]}`)
+	newRaw := []byte(`{"screendetail":[
+		{"line_number":"0","item_code":"AAA","qty":"1","price":"10"},
+		{"line_number":"1","item_code":"BBB","item_name":"สินค้า B","qty":"2","price":"20"}
+	]}`)
+
+	changes, err := diffERPLogPayloads(oldRaw, newRaw)
+	if err != nil {
+		t.Fatalf("diff failed: %v", err)
+	}
+	if len(changes) != 1 || changes[0].Field != "row_added" || changes[0].RowKey != "BBB" {
+		t.Fatalf("changes = %+v, want a single row_added for BBB", changes)
+	}
+}

@@ -303,6 +303,9 @@ func diffERPDetail(oldRows, newRows []map[string]any, out *[]erpFieldChange) {
 
 		oldRow, existed := oldByKey[key]
 		if !existed {
+			if erpDetailRowIsBlank(newRow) {
+				continue
+			}
 			*out = append(*out, erpFieldChange{
 				Section:  "screendetail",
 				Field:    "row_added",
@@ -333,6 +336,9 @@ func diffERPDetail(oldRows, newRows []map[string]any, out *[]erpFieldChange) {
 			continue
 		}
 		oldRow := oldByKey[key]
+		if erpDetailRowIsBlank(oldRow) {
+			continue
+		}
 		*out = append(*out, erpFieldChange{
 			Section:  "screendetail",
 			Field:    "row_removed",
@@ -343,6 +349,32 @@ func diffERPDetail(oldRows, newRows []map[string]any, out *[]erpFieldChange) {
 			New:      "",
 		})
 	}
+}
+
+// erpDetailRowIsBlank reports a placeholder line: no product, no name, and a
+// zero quantity, price and amount.
+//
+// SML appends these empty rows to the grid when a document is re-saved. They
+// carry nothing a person typed, so reporting one as "เพิ่มรายการ" turns a plain
+// re-save into a change and blocks a document nobody edited. Measured on
+// Damrong production after the first release: 131 of 1,166 edit rows (11%)
+// differed from their predecessor only by gaining blank rows, and in every
+// blank row seen, every column was empty or zero.
+//
+// The test is deliberately narrow: a row with a name but no code, or a quantity
+// but no code, is not blank, so a real line is never skipped.
+func erpDetailRowIsBlank(row map[string]any) bool {
+	for _, field := range []string{"item_code", "item_name"} {
+		if normalizeERPValue(row[field]) != "" {
+			return false
+		}
+	}
+	for _, field := range []string{"qty", "price", "sum_amount"} {
+		if v := normalizeERPValue(row[field]); v != "" && v != "0" {
+			return false
+		}
+	}
+	return true
 }
 
 // erpDetailRowSummary renders a one-line description of an added/removed row
